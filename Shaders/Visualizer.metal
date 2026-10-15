@@ -13,6 +13,8 @@ struct FrameUniforms {
     float rotate, saturation, particleBright, charCount;
     float4 charPos[3];    // xyz + attraction
     float4 charColor[3];  // rgb + brightness
+    float4 worlds;        // classic, magnetosphere, xbox, twirl
+    float4 effects;       // hue drift, flash
 };
 
 struct Particle {
@@ -32,8 +34,9 @@ struct ShapeUniforms {
 };
 
 struct LineVertex {
-    float4 position;
-    float4 color;
+    float4 position;  // w = 1 world space, w = 0 already on screen
+    float4 color;     // rgb + brightness
+    float4 extra;     // x: position across the line (-1...1)
 };
 
 // ---------- helpers ----------
@@ -72,6 +75,12 @@ static float3 palette(float t, float hue, float sat) {
     float3 c = 0.5 + 0.5 * cos(6.28318 * (t + hue + float3(0.0, 0.33, 0.67)));
     float l = dot(c, float3(0.299, 0.587, 0.114));
     return mix(float3(l), c, saturate(sat));
+}
+
+static float3 hueRotate(float3 c, float angle) {
+    const float3 k = float3(0.57735);
+    float cs = cos(angle);
+    return c * cs + cross(k, c) * sin(angle) + k * dot(k, c) * (1.0 - cs);
 }
 
 static float3 flowField(float3 p, float t) {
@@ -136,10 +145,15 @@ vertex ParticleOut particleVertex(const device Particle *particles [[buffer(0)]]
     int count = max(1, int(u.charCount));
     float4 cc = u.charColor[int(vid) % count];
     float speed = length(p.vel.xyz);
-    float3 col = mix(cc.rgb, float3(1.0), saturate(speed * 0.15 + u.treble * 0.3));
+    float seed = p.vel.w;
+    // Magnetosphere: the nebula spreads across neighbouring hues instead of one flat colour.
+    float3 spread = palette(fract(seed * 0.37) * 0.35 + u.time * 0.02, u.bgHue, 1.0);
+    float3 base = mix(cc.rgb, spread, 0.55 * u.worlds.y);
+    float3 col = mix(base, float3(1.0), saturate(speed * 0.15 + u.treble * 0.3));
     float life = p.pos.w;
     float fade = smoothstep(0.0, 0.2, life) * (1.0 - smoothstep(0.9, 1.0, life));
-    o.color = float4(col * (0.35 + 0.65 * cc.a) * u.particleBright * fade * 0.07, 1.0);
+    float worldBright = 0.25 + u.worlds.y;
+    o.color = float4(col * (0.35 + 0.65 * cc.a) * u.particleBright * fade * worldBright * 0.07, 1.0);
     o.size = clamp((2.5 + u.treble * 3.0) * 7.0 / max(o.position.w, 0.1), 1.0, 14.0);
     return o;
 }
@@ -188,19 +202,29 @@ fragment float4 shapeFragment(ShapeOut in [[stage_in]]) {
 struct LineOut {
     float4 position [[position]];
     float4 color;
+    float across;
 };
 
 vertex LineOut lineVertex(const device LineVertex *vertices [[buffer(0)]],
                           constant FrameUniforms &u [[buffer(1)]],
                           uint vid [[vertex_id]]) {
+    LineVertex v = vertices[vid];
     LineOut o;
-    o.position = u.viewProj * float4(vertices[vid].position.xyz, 1.0);
-    o.color = vertices[vid].color;
+    if (v.position.w < 0.5) {
+        o.position = float4(v.position.xy, 0.0, 1.0);
+    } else {
+        o.position = u.viewProj * float4(v.position.xyz, 1.0);
+    }
+    o.color = v.color;
+    o.across = v.extra.x;
     return o;
 }
 
 fragment float4 lineFragment(LineOut in [[stage_in]]) {
-    return float4(in.color.rgb * in.color.a, 1.0);
+    float d = abs(in.across);
+    float core = 1.0 - smoothstep(0.0, 1.0, d);
+    float edge = core * core;
+    return float4(in.color.rgb * in.color.a * edge, 1.0);
 }
 
 // ---------- full-screen passes ----------
@@ -224,10 +248,13 @@ fragment float4 composeFragment(ScreenOut in [[stage_in]],
                                 constant FrameUniforms &u [[buffer(1)]]) {
     constexpr sampler s(filter::linear, address::clamp_to_zero);
     float2 c = in.uv - 0.5;
-    float cs = cos(u.rotate);
-    float sn = sin(u.rotate);
+    // Classic iTunes liquid swirl: turns harder near the centre.
+    float twirl = u.worlds.w * 0.03 / (0.15 + length(c) * 3.0);
+    float cs = cos(u.rotate + twirl);
+    float sn = sin(u.rotate + twirl);
     c = float2(c.x * cs - c.y * sn, c.x * sn + c.y * cs) / u.zoom;
     float3 trail = previous.sample(s, c + 0.5).rgb * u.fade;
+    trail = max(hueRotate(trail, u.effects.x), 0.0);
 
     float2 p = in.uv * 2.0 - 1.0;
     p.x *= u.aspect;
@@ -238,12 +265,13 @@ fragment float4 composeFragment(ScreenOut in [[stage_in]],
     float f = fbm(p + 3.5 * r);
     float3 bg = palette(f * 0.8 + length(r) * 0.4, u.bgHue, u.saturation) * (f * f * 1.6) * u.bgIntensity;
     bg *= 0.75 + u.bass * 0.5;
-    return float4(trail + bg * 0.035, 1.0);
+    return float4(trail + bg * (0.02 + 0.05 * u.worlds.x), 1.0);
 }
 
 fragment float4 presentFragment(ScreenOut in [[stage_in]],
                                 texture2d<float> trails [[texture(0)]],
-                                texture2d<float> crisp [[texture(1)]]) {
+                                texture2d<float> crisp [[texture(1)]],
+                                constant FrameUniforms &u [[buffer(1)]]) {
     constexpr sampler s(filter::linear, address::clamp_to_edge);
     float3 c = trails.sample(s, in.uv).rgb + crisp.sample(s, in.uv).rgb;
     float2 px = 1.0 / float2(trails.get_width(), trails.get_height());
@@ -255,7 +283,8 @@ fragment float4 presentFragment(ScreenOut in [[stage_in]],
         }
     }
     glow /= 25.0;
-    c += glow * 0.6;
+    c += glow * (0.6 + 0.4 * u.worlds.z);
+    c += u.effects.y * 0.35;
     c = 1.0 - exp(-c * 1.1);
     float vignette = 1.0 - smoothstep(0.35, 1.2, length(in.uv - 0.5) * 1.5);
     return float4(c * vignette, 1.0);

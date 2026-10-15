@@ -25,6 +25,30 @@ enum StoryAction: String, CaseIterable, Codable {
     }
 }
 
+/// The three visual worlds the story moves between.
+enum StoryWorld: String, CaseIterable, Codable {
+    /// Classic iTunes: liquid colour trails and glowing waveform ribbons. Memory, dreaming, reflection.
+    case classic
+    /// Apple Music Magnetosphere: a glowing particle nebula. Longing, tenderness, building up.
+    case magnetosphere
+    /// Original Xbox: neon wireframes, tunnels and bursts. Energy, conflict, the big moments.
+    case xbox
+
+    var meaning: String {
+        switch self {
+        case .classic: return "dreamy liquid colour and flowing waveforms: memories, reflection, intimacy, the quiet verses"
+        case .magnetosphere: return "a glowing particle nebula: longing, tenderness, hope, things building up"
+        case .xbox: return "neon wireframes rushing through a tunnel with bursts of light: energy, conflict, release, the chorus and the climax"
+        }
+    }
+
+    static func fallback(energy: Double, valence: Double) -> StoryWorld {
+        if energy > 0.62 { return .xbox }
+        if valence < -0.15 || energy < 0.35 { return .classic }
+        return .magnetosphere
+    }
+}
+
 enum ShapeKind: String, CaseIterable, Codable {
     case sphere, cube, torus, tetrahedron, octahedron, icosahedron
 }
@@ -58,16 +82,18 @@ struct StoryBeat: Codable {
     var valence: Double
     var energy: Double
     var hue: Double
+    var world: StoryWorld
 
-    enum CodingKeys: String, CodingKey { case time, action, actors, valence, energy, hue }
+    enum CodingKeys: String, CodingKey { case time, action, actors, valence, energy, hue, world }
 
-    init(time: Double, action: StoryAction, actors: [Int], valence: Double, energy: Double, hue: Double) {
+    init(time: Double, action: StoryAction, actors: [Int], valence: Double, energy: Double, hue: Double, world: StoryWorld? = nil) {
         self.time = time
         self.action = action
         self.actors = actors
         self.valence = valence
         self.energy = energy
         self.hue = hue
+        self.world = world ?? StoryWorld.fallback(energy: energy, valence: valence)
     }
 
     init(from decoder: Decoder) throws {
@@ -79,6 +105,8 @@ struct StoryBeat: Codable {
         valence = max(-1, min(1, (try? c.decode(Double.self, forKey: .valence)) ?? 0))
         energy = max(0, min(1, (try? c.decode(Double.self, forKey: .energy)) ?? 0.5))
         hue = Story.wrap((try? c.decode(Double.self, forKey: .hue)) ?? 0.6)
+        let worldName = ((try? c.decode(String.self, forKey: .world)) ?? "").lowercased()
+        world = StoryWorld(rawValue: worldName) ?? StoryWorld.fallback(energy: energy, valence: valence)
     }
 }
 
@@ -140,7 +168,12 @@ enum SimpleStoryteller {
         ]
         var beats: [StoryBeat] = []
         var previous: StoryAction = .drift
+        var repeats = 0
         var mood = 0.0
+        // Lines that come back are the chorus: give them the big, energetic world.
+        var counts: [String: Int] = [:]
+        for line in lines { counts[normalized(line.text), default: 0] += 1 }
+        let fallbacks: [StoryAction] = [.approach, .orbit, .drift, .reveal, .chase, .rise, .embrace, .calm]
 
         for (index, line) in lines.enumerated() {
             let words = line.text.lowercased()
@@ -148,9 +181,10 @@ enum SimpleStoryteller {
                 .filter { !$0.isEmpty }
 
             if words.isEmpty {
-                beats.append(StoryBeat(time: line.time, action: .calm, actors: [], valence: mood, energy: 0.2, hue: 0.62))
+                beats.append(StoryBeat(time: line.time, action: .calm, actors: [], valence: mood, energy: 0.2, hue: 0.62, world: .classic))
                 continue
             }
+            let isChorus = (counts[normalized(line.text)] ?? 0) > 1
 
             var best: StoryAction?
             var bestScore = 0
@@ -158,14 +192,21 @@ enum SimpleStoryteller {
                 let score = words.filter { keys.contains($0) }.count
                 if score > bestScore { best = action; bestScore = score }
             }
-            // Keep the story moving even when no keyword matches.
-            let action = best ?? (index % 4 == 3 ? .orbit : previous == .drift ? .approach : .drift)
+            // Keep the story moving: no keyword match, or the same staging three times running, picks something new.
+            var action = best ?? fallbacks[index % fallbacks.count]
+            repeats = action == previous ? repeats + 1 : 0
+            if repeats >= 2 {
+                action = fallbacks[(index * 3) % fallbacks.count]
+                if action == previous { action = .orbit }
+                repeats = 0
+            }
+            if isChorus, best == nil { action = [.bloom, .orbit, .rise][index % 3] }
             previous = action
 
             let pos = Double(words.filter { positive.contains($0) }.count)
             let neg = Double(words.filter { negative.contains($0) }.count)
             mood = mood * 0.6 + ((pos - neg) / max(1, pos + neg)) * 0.4
-            var energy = 0.35 + 0.15 * Double(words.filter { energetic.contains($0) }.count)
+            var energy = 0.35 + 0.15 * Double(words.filter { energetic.contains($0) }.count) + (isChorus ? 0.3 : 0)
             if line.text.contains("!") { energy += 0.2 }
             if line.text == line.text.uppercased(), line.text.count > 3 { energy += 0.2 }
 
@@ -176,8 +217,14 @@ enum SimpleStoryteller {
             else if !set.isDisjoint(with: ["i", "me", "my", "im", "myself"]) { actors = [0] }
 
             let hue = mood >= 0 ? 0.05 + 0.1 * (1 - mood) : 0.55 + 0.15 * -mood
-            beats.append(StoryBeat(time: line.time, action: action, actors: actors, valence: mood, energy: min(1, energy), hue: hue))
+            if actors.isEmpty { actors = index % 3 == 0 ? [0, 1] : [index % 2] }
+            let world: StoryWorld = isChorus ? .xbox : StoryWorld.fallback(energy: min(1, energy), valence: mood)
+            beats.append(StoryBeat(time: line.time, action: action, actors: actors, valence: mood, energy: min(1, energy), hue: hue, world: world))
         }
         return Story(title: title, characters: characters, beats: beats, author: "simple").sanitized()
+    }
+
+    private static func normalized(_ text: String) -> String {
+        text.lowercased().filter { $0.isLetter || $0 == " " }.trimmingCharacters(in: .whitespaces)
     }
 }

@@ -93,6 +93,7 @@ final class StoryService {
 
     static func prompt(track: TrackInfo, lyrics: [LyricLine]) -> String {
         let actions = StoryAction.allCases.map { "- \($0.rawValue): \($0.meaning)" }.joined(separator: "\n")
+        let worlds = StoryWorld.allCases.map { "- \($0.rawValue): \($0.meaning)" }.joined(separator: "\n")
         let lines = lyrics.prefix(240).map { String(format: "[%.2f] %@", $0.time, $0.text.isEmpty ? "(instrumental)" : $0.text) }
             .joined(separator: "\n")
         return """
@@ -113,11 +114,14 @@ final class StoryService {
         - valence: -1 (despair) to 1 (joy)
         - energy: 0 (stillness) to 1 (explosive)
         - hue: the colour of the whole world in that moment, 0 to 1
+        - world: which of three visual worlds the scene happens in:
+        \(worlds)
+          Keep the same world through a section (a verse, a chorus, a bridge) and change world when the song moves to a new section, so each chapter of the story has its own look. Choruses usually belong in xbox.
 
         Give the story an arc that builds, turns and resolves across the song. Repeated choruses should echo each other with the same staging, and the final beats should land the ending.
 
         Respond with only a JSON object and nothing else, in this shape:
-        {"title": "a short name for the story", "characters": [{"name": "...", "shape": "torus", "hue": 0.6}], "beats": [{"time": 12.3, "action": "approach", "actors": [0, 1], "valence": 0.2, "energy": 0.5, "hue": 0.6}]}
+        {"title": "a short name for the story", "characters": [{"name": "...", "shape": "torus", "hue": 0.6}], "beats": [{"time": 12.3, "action": "approach", "actors": [0, 1], "valence": 0.2, "energy": 0.5, "hue": 0.6, "world": "magnetosphere"}]}
         """
     }
 

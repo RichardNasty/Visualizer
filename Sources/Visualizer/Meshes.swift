@@ -18,6 +18,52 @@ enum MeshFactory {
         }
     }
 
+    /// The shape's edges, for the neon wireframe look.
+    static func edges(_ kind: ShapeKind) -> [(SIMD3<Float>, SIMD3<Float>)] {
+        switch kind {
+        case .sphere: return uniqueEdges(subdivide(icosahedron(), times: 1))
+        case .icosahedron: return uniqueEdges(icosahedron())
+        case .octahedron: return uniqueEdges(octahedron())
+        case .tetrahedron: return uniqueEdges(tetrahedron())
+        case .cube:
+            let h: Float = 0.62
+            let p = (0..<8).map { i in SIMD3<Float>(i & 1 == 0 ? -h : h, i & 2 == 0 ? -h : h, i & 4 == 0 ? -h : h) }
+            let pairs = [(0, 1), (2, 3), (4, 5), (6, 7), (0, 2), (1, 3), (4, 6), (5, 7), (0, 4), (1, 5), (2, 6), (3, 7)]
+            return pairs.map { (p[$0.0], p[$0.1]) }
+        case .torus:
+            let major: Float = 0.75, minor: Float = 0.28, segments = 16, sides = 8
+            func point(_ i: Int, _ j: Int) -> SIMD3<Float> {
+                let u = Float(i) / Float(segments) * 2 * .pi
+                let v = Float(j) / Float(sides) * 2 * .pi
+                let center = SIMD3<Float>(cos(u) * major, 0, sin(u) * major)
+                let normal = SIMD3<Float>(cos(u) * cos(v), sin(v), sin(u) * cos(v))
+                return center + normal * minor
+            }
+            var result: [(SIMD3<Float>, SIMD3<Float>)] = []
+            for i in 0..<segments {
+                for j in 0..<sides {
+                    result.append((point(i, j), point(i + 1, j)))
+                    result.append((point(i, j), point(i, j + 1)))
+                }
+            }
+            return result
+        }
+    }
+
+    private static func uniqueEdges(_ triangles: Triangles) -> [(SIMD3<Float>, SIMD3<Float>)] {
+        var seen = Set<String>()
+        var result: [(SIMD3<Float>, SIMD3<Float>)] = []
+        func key(_ p: SIMD3<Float>) -> String { String(format: "%.3f,%.3f,%.3f", p.x, p.y, p.z) }
+        for (a, b, c) in triangles {
+            for (p, q) in [(a, b), (b, c), (c, a)] {
+                let k1 = key(p), k2 = key(q)
+                let k = k1 < k2 ? k1 + "|" + k2 : k2 + "|" + k1
+                if seen.insert(k).inserted { result.append((p, q)) }
+            }
+        }
+        return result
+    }
+
     private typealias Triangles = [(SIMD3<Float>, SIMD3<Float>, SIMD3<Float>)]
 
     private static func faceted(_ triangles: Triangles) -> [ShapeVertex] {
