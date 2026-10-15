@@ -330,7 +330,7 @@ final class Renderer: NSObject, MTKViewDelegate {
             var center = SIMD3<Float>(cos(angle) * (radius + sample * 0.4), sample * 0.6, sin(angle) * (radius + sample * 0.4))
             // Tilt the ring around the x axis.
             center = SIMD3(center.x, center.y * cos(tilt) - center.z * sin(tilt), center.y * sin(tilt) + center.z * cos(tilt))
-            let rgb = hsv(scene.waveHue + Float(i) / Float(count) * 0.25, 0.7, 1) * brightness
+            let rgb = hsv(scene.waveHue + 0.12 * sin(angle), 0.7, 1) * brightness
             let color = SIMD4<Float>(rgb, 1)
             vertices[i * 2] = LineVertex(position: SIMD4(center + SIMD3(0, thickness, 0), 1), color: color)
             vertices[i * 2 + 1] = LineVertex(position: SIMD4(center - SIMD3(0, thickness, 0), 1), color: color)
