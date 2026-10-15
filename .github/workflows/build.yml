@@ -32,12 +32,16 @@ jobs:
         run: ./scripts/build-app.sh
 
       - name: Self-test
+        env:
+          VISUALIZER_PREVIEW: build/preview
         run: ./build/Visualizer.app/Contents/MacOS/Visualizer --selftest
 
       - uses: actions/upload-artifact@v5
         with:
           name: Visualizer
-          path: build/Visualizer.zip
+          path: |
+            build/Visualizer.zip
+            build/preview/*.png
 
       - name: Publish the download
         if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
@@ -45,7 +49,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release delete latest --yes --cleanup-tag || true
-          gh release create latest build/Visualizer.zip \
+          gh release create latest build/Visualizer.zip build/preview/*.png \
             --title "Visualizer (latest build)" \
             --notes "Download Visualizer.zip, unzip it, and drag Visualizer into Applications. See the README for first-launch steps." \
             --target "$GITHUB_SHA"

@@ -1,5 +1,8 @@
+import CoreGraphics
 import Foundation
+import ImageIO
 import Metal
+import UniformTypeIdentifiers
 
 /// `Visualizer --selftest`: checks the parts that can be checked without a person, used by the build.
 enum SelfTest {
@@ -91,7 +94,67 @@ enum SelfTest {
             print("SKIP  render frames — no GPU on this machine")
         }
 
+        if let folder = ProcessInfo.processInfo.environment["VISUALIZER_PREVIEW"] {
+            savePreviews(to: folder, story: simple)
+        }
+
         print(failures == 0 ? "All checks passed." : "\(failures) check(s) failed.")
         return failures == 0 ? 0 : 1
+    }
+
+    /// Renders a few stills of a story playing to fake music, for the README and release page.
+    private static func savePreviews(to folder: String, story: Story?) {
+        guard let device = MTLCreateSystemDefaultDevice(), let renderer = try? Renderer(device: device) else { return }
+        let width = 1280, height = 720
+        let director = Director()
+        director.story = story
+        var clock = 0.0
+        director.songPosition = { clock }
+        var frame = 0
+        renderer.frameSource = { dt in
+            frame += 1
+            let t = Float(frame) / 60
+            var audio = AudioFeatures()
+            audio.silent = false
+            audio.bass = 0.5 + 0.5 * max(0, sin(t * 7.5))
+            audio.mid = 0.4 + 0.2 * sin(t * 3)
+            audio.treble = 0.3 + 0.2 * sin(t * 11)
+            audio.level = 0.6 + 0.3 * sin(t * 1.3)
+            audio.beat = fmod(t, 0.5) < 0.05 ? 1 : 0
+            audio.waveform = (0..<AudioFeatures.waveformCount).map { i -> Float in
+                let x = Float(i)
+                let a: Float = sin(x * 0.09 + t * 20) * 0.6
+                let b: Float = sin(x * 0.31 - t * 9) * 0.3
+                return a + b
+            }
+            return (director.update(dt: 1 / 60, audio: audio), audio)
+        }
+        let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .bgra8Unorm, width: width, height: height, mipmapped: false)
+        descriptor.usage = [.renderTarget, .shaderRead]
+        descriptor.storageMode = .shared
+        guard let target = device.makeTexture(descriptor: descriptor) else { return }
+        try? FileManager.default.createDirectory(atPath: folder, withIntermediateDirectories: true)
+
+        // One still per lyric moment: 12.5s embrace, 15s rise, 20s calm.
+        for (index, moment) in [13.5, 17.0, 22.0].enumerated() {
+            var last: MTLCommandBuffer?
+            while clock < moment {
+                clock += 1.0 / 60
+                renderer.renderFrame(to: target, size: CGSize(width: width, height: height)) { last = $0 }
+            }
+            last?.waitUntilCompleted()
+            var pixels = [UInt8](repeating: 0, count: width * height * 4)
+            target.getBytes(&pixels, bytesPerRow: width * 4, from: MTLRegionMake2D(0, 0, width, height), mipmapLevel: 0)
+            let info = CGBitmapInfo(rawValue: CGImageAlphaInfo.noneSkipFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue)
+            guard let provider = CGDataProvider(data: Data(pixels) as CFData),
+                  let image = CGImage(width: width, height: height, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: width * 4,
+                                      space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: info, provider: provider,
+                                      decode: nil, shouldInterpolate: false, intent: .defaultIntent) else { continue }
+            let url = URL(fileURLWithPath: folder).appendingPathComponent("preview-\(index + 1).png")
+            guard let destination = CGImageDestinationCreateWithURL(url as CFURL, UTType.png.identifier as CFString, 1, nil) else { continue }
+            CGImageDestinationAddImage(destination, image, nil)
+            CGImageDestinationFinalize(destination)
+            print("Saved \(url.path)")
+        }
     }
 }
