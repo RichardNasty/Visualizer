@@ -13,7 +13,7 @@ jobs:
   build:
     runs-on: macos-15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Tools
         run: |
@@ -34,7 +34,7 @@ jobs:
       - name: Self-test
         run: ./build/Visualizer.app/Contents/MacOS/Visualizer --selftest
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: Visualizer
           path: build/Visualizer.zip

@@ -78,7 +78,11 @@ enum SelfTest {
                 last?.waitUntilCompleted()
                 var pixels = [UInt8](repeating: 0, count: 640 * 360 * 4)
                 target.getBytes(&pixels, bytesPerRow: 640 * 4, from: MTLRegionMake2D(0, 0, 640, 360), mipmapLevel: 0)
-                let lit = stride(from: 0, to: pixels.count, by: 4).filter { Int(pixels[$0]) + Int(pixels[$0 + 1]) + Int(pixels[$0 + 2]) > 30 }.count
+                var lit = 0
+                for i in stride(from: 0, to: pixels.count, by: 4) {
+                    let sum: Int = Int(pixels[i]) + Int(pixels[i + 1]) + Int(pixels[i + 2])
+                    if sum > 30 { lit += 1 }
+                }
                 check("render frames", last?.status == .completed && lit > 500, "\(device.name), \(lit) lit pixels")
             } catch {
                 check("render frames", false, error.localizedDescription)
