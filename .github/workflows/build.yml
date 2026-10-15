@@ -1,0 +1,51 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Tools
+        run: |
+          sw_vers
+          xcodebuild -version
+          swift --version
+
+      - name: Check the shaders compile
+        run: |
+          if ! xcrun -sdk macosx metal -c Shaders/Visualizer.metal -o /tmp/Visualizer.air; then
+            xcodebuild -downloadComponent MetalToolchain || true
+            xcrun -sdk macosx metal -c Shaders/Visualizer.metal -o /tmp/Visualizer.air
+          fi
+
+      - name: Build the app
+        run: ./scripts/build-app.sh
+
+      - name: Self-test
+        run: ./build/Visualizer.app/Contents/MacOS/Visualizer --selftest
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Visualizer
+          path: build/Visualizer.zip
+
+      - name: Publish the download
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete latest --yes --cleanup-tag || true
+          gh release create latest build/Visualizer.zip \
+            --title "Visualizer (latest build)" \
+            --notes "Download Visualizer.zip, unzip it, and drag Visualizer into Applications. See the README for first-launch steps." \
+            --target "$GITHUB_SHA"
