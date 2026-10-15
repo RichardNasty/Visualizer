@@ -67,6 +67,7 @@ final class Renderer: NSObject, MTKViewDelegate {
     private var frameIndex = 0
     private var current: MTLTexture?
     private var previous: MTLTexture?
+    private var crisp: MTLTexture?
     private var startTime = CACurrentMediaTime()
     private var lastTime = CACurrentMediaTime()
 
@@ -180,7 +181,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         let (scene, audio) = frameSource?(dt) ?? (SceneState(), AudioFeatures())
 
         ensureTextures(width: Int(size.width), height: Int(size.height))
-        guard let current, let previous, let commands = queue.makeCommandBuffer() else { inFlight.signal(); return }
+        guard let current, let previous, let crisp, let commands = queue.makeCommandBuffer() else { inFlight.signal(); return }
         let semaphore = inFlight
         commands.addCompletedHandler { _ in semaphore.signal() }
 
@@ -211,7 +212,16 @@ final class Renderer: NSObject, MTKViewDelegate {
             encoder.setVertexBuffer(particleBuffer, offset: 0, index: 0)
             encoder.setVertexBytes(&u, length: MemoryLayout<FrameUniforms>.stride, index: 1)
             encoder.drawPrimitives(type: .point, vertexStart: 0, vertexCount: Self.particleCount)
+            encoder.endEncoding()
+        }
 
+        // Shapes and the waveform stay sharp: drawn fresh each frame, without trails.
+        let crispPass = MTLRenderPassDescriptor()
+        crispPass.colorAttachments[0].texture = crisp
+        crispPass.colorAttachments[0].loadAction = .clear
+        crispPass.colorAttachments[0].clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 1)
+        crispPass.colorAttachments[0].storeAction = .store
+        if let encoder = commands.makeRenderCommandEncoder(descriptor: crispPass) {
             encoder.setRenderPipelineState(shapePipeline)
             encoder.setVertexBytes(&u, length: MemoryLayout<FrameUniforms>.stride, index: 1)
             for character in scene.characters {
@@ -243,6 +253,7 @@ final class Renderer: NSObject, MTKViewDelegate {
            let encoder = commands.makeRenderCommandEncoder(descriptor: presentPass) {
             encoder.setRenderPipelineState(pipeline)
             encoder.setFragmentTexture(current, index: 0)
+            encoder.setFragmentTexture(crisp, index: 1)
             encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
             encoder.endEncoding()
         }
@@ -260,6 +271,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         d.storageMode = .private
         current = device.makeTexture(descriptor: d)
         previous = device.makeTexture(descriptor: d)
+        crisp = device.makeTexture(descriptor: d)
         // Start the trail texture black.
         if let previous, let commands = queue.makeCommandBuffer() {
             let pass = MTLRenderPassDescriptor()

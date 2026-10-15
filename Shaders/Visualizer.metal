@@ -139,7 +139,7 @@ vertex ParticleOut particleVertex(const device Particle *particles [[buffer(0)]]
     float3 col = mix(cc.rgb, float3(1.0), saturate(speed * 0.15 + u.treble * 0.3));
     float life = p.pos.w;
     float fade = smoothstep(0.0, 0.2, life) * (1.0 - smoothstep(0.9, 1.0, life));
-    o.color = float4(col * (0.35 + 0.65 * cc.a) * u.particleBright * fade * 0.55, 1.0);
+    o.color = float4(col * (0.35 + 0.65 * cc.a) * u.particleBright * fade * 0.07, 1.0);
     o.size = clamp((2.5 + u.treble * 3.0) * 7.0 / max(o.position.w, 0.1), 1.0, 14.0);
     return o;
 }
@@ -238,22 +238,25 @@ fragment float4 composeFragment(ScreenOut in [[stage_in]],
     float f = fbm(p + 3.5 * r);
     float3 bg = palette(f * 0.8 + length(r) * 0.4, u.bgHue, u.saturation) * (f * f * 1.6) * u.bgIntensity;
     bg *= 0.75 + u.bass * 0.5;
-    return float4(trail * 0.98 + bg * 0.12, 1.0);
+    return float4(trail + bg * 0.035, 1.0);
 }
 
-fragment float4 presentFragment(ScreenOut in [[stage_in]], texture2d<float> source [[texture(0)]]) {
+fragment float4 presentFragment(ScreenOut in [[stage_in]],
+                                texture2d<float> trails [[texture(0)]],
+                                texture2d<float> crisp [[texture(1)]]) {
     constexpr sampler s(filter::linear, address::clamp_to_edge);
-    float3 c = source.sample(s, in.uv).rgb;
-    float2 px = 1.0 / float2(source.get_width(), source.get_height());
+    float3 c = trails.sample(s, in.uv).rgb + crisp.sample(s, in.uv).rgb;
+    float2 px = 1.0 / float2(trails.get_width(), trails.get_height());
     float3 glow = float3(0.0);
     for (int i = -2; i <= 2; i++) {
         for (int j = -2; j <= 2; j++) {
-            glow += source.sample(s, in.uv + float2(i, j) * px * 5.0).rgb;
+            float2 at = in.uv + float2(i, j) * px * 6.0;
+            glow += crisp.sample(s, at).rgb + trails.sample(s, at).rgb * 0.5;
         }
     }
     glow /= 25.0;
-    c += glow * 0.7;
-    c = 1.0 - exp(-c * 1.3);
+    c += glow * 0.6;
+    c = 1.0 - exp(-c * 1.1);
     float vignette = 1.0 - smoothstep(0.35, 1.2, length(in.uv - 0.5) * 1.5);
     return float4(c * vignette, 1.0);
 }

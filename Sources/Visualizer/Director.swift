@@ -184,13 +184,13 @@ final class Director {
         scene.swirl = mix(scene.swirl, stage.swirl * drive, rate: 1.2, dt: dt)
         scene.radial = mix(scene.radial, stage.radial, rate: 2, dt: dt) + burst
         scene.gravity = mix(scene.gravity, SIMD3(0, stage.gravity, 0), rate: 1, dt: dt)
-        scene.fade = mix(scene.fade, stage.fade, rate: 0.8, dt: dt)
+        scene.fade = mix(scene.fade, stage.fade - 0.04, rate: 0.8, dt: dt)
         scene.warp = mix(scene.warp, stage.warp + audio.bass * 0.4, rate: 1, dt: dt)
         scene.saturation = mix(scene.saturation, stage.saturation * (0.85 + valence * 0.15), rate: 0.8, dt: dt)
         scene.particleBrightness = mix(scene.particleBrightness, (0.5 + energySmooth * 0.6) * (beat.action == .hide ? 0.5 : 1), rate: 1, dt: dt)
         scene.backgroundHue = mixHue(scene.backgroundHue, Float(beat.hue), 1 - exp(-dt * 0.5))
         scene.backgroundIntensity = 0.18 + audio.level * 0.25 + flash * 0.3
-        scene.zoom = 1.003 + audio.bass * 0.012 + scene.radial * 0.004
+        scene.zoom = 1.001 + audio.bass * 0.004 + scene.radial * 0.0015
         scene.rotate = 0.0015 * sin(t * 0.1) + scene.swirl * 0.0012
         scene.cameraAngle += dt * (0.04 + energySmooth * 0.08)
         scene.cameraDistance = mix(scene.cameraDistance, 6.8 - energySmooth * 1.2 + (beat.action == .hide ? 1.2 : 0) + (beat.action == .separate ? 1.0 : 0), rate: 0.5, dt: dt)
