@@ -8,6 +8,9 @@ struct CharacterRender {
     var color: SIMD3<Float>
     var brightness: Float
     var shape: ShapeKind
+    /// The shape it is turning from, and how far through the change it is (0...1).
+    var previousShape: ShapeKind
+    var morph: Float
     var displacement: Float
     var attraction: Float
     /// Recent positions, newest first, so the eye can follow where each character has been.
@@ -105,6 +108,9 @@ final class Director {
         var rotation = SIMD3<Float>(0, 0, 0)
         var phase: Float
         var trail: [SIMD3<Float>] = []
+        var current: ShapeKind? = nil
+        var previous: ShapeKind? = nil
+        var morph: Float = 1
     }
 
     /// Song position in seconds, if known.
@@ -193,6 +199,16 @@ final class Director {
             }
             target += SIMD3(sin(t * 0.31 + actor.phase), sin(t * 0.23 + actor.phase * 1.7), cos(t * 0.27 + actor.phase)) * 0.18
 
+            // Transform into the shape of the moment: a heart in love, a star in joy, a tear in sorrow.
+            let wanted = slot != nil ? (beat.action.moodShape ?? actor.shape) : actor.shape
+            if actor.current == nil { actor.current = wanted; actor.previous = wanted }
+            if actor.current != wanted {
+                actor.previous = actor.current
+                actor.current = wanted
+                actor.morph = 0
+            }
+            actor.morph = min(1, actor.morph + dt * 1.4)
+
             actor.position = mix(actor.position, target, rate: 1.1 * drive, dt: dt)
             actor.scale = mix(actor.scale, scale, rate: 1.8, dt: dt)
             actor.brightness = mix(actor.brightness, brightness, rate: 1.8, dt: dt)
@@ -215,7 +231,9 @@ final class Director {
                 rotation: actor.rotation,
                 color: hsv(actor.hue, saturation, 1),
                 brightness: actor.brightness * (0.75 + audio.level * 0.5 + flash),
-                shape: actor.shape,
+                shape: actor.current ?? actor.shape,
+                previousShape: actor.previous ?? actor.shape,
+                morph: actor.morph,
                 displacement: 0.03 + audio.bass * 0.15 + (beat.action == .shatter ? 0.3 : 0) + burst * 0.25,
                 attraction: slot == nil ? 0.4 : 1.0 + (beat.action == .embrace ? 0.6 : 0),
                 trail: actor.trail

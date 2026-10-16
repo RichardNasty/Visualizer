@@ -15,6 +15,8 @@ enum MeshFactory {
         case .tetrahedron: return faceted(tetrahedron())
         case .cube: return faceted(cube())
         case .torus: return torus(major: 0.75, minor: 0.28, segments: 64, sides: 24)
+        case .heart, .teardrop: return surface(kind, segments: 72, rings: 48, faceted: false)
+        case .star, .shards: return surface(kind, segments: 72, rings: 48, faceted: true)
         }
     }
 
@@ -47,7 +49,124 @@ enum MeshFactory {
                 }
             }
             return result
+        case .heart, .star, .teardrop, .shards:
+            let segments = 18, rings = 10
+            var result: [(SIMD3<Float>, SIMD3<Float>)] = []
+            for i in 0..<segments {
+                for j in 0..<rings {
+                    let u0 = Float(i) / Float(segments), u1 = Float(i + 1) / Float(segments)
+                    let v0 = Float(j) / Float(rings), v1 = Float(j + 1) / Float(rings)
+                    result.append((point(kind, u0, v0), point(kind, u1, v0)))
+                    result.append((point(kind, u0, v0), point(kind, u0, v1)))
+                }
+            }
+            return result
         }
+    }
+
+    // MARK: - Mood shapes, all built as surfaces over (u around, v top to bottom)
+
+    /// A point on a mood shape. u goes around (0...1), v goes from top (0) to bottom (1).
+    static func point(_ kind: ShapeKind, _ u: Float, _ v: Float) -> SIMD3<Float> {
+        let theta = u * 2 * .pi
+        let phi = v * .pi
+        switch kind {
+        case .heart:
+            // The classic 3D heart surface, lobes on top, scaled to about the size of a ball.
+            let a = phi, b = theta
+            let x = sin(a) * (15 * sin(b) - 4 * sin(3 * b))
+            let depth = 8 * cos(a)
+            let y = sin(a) * (15 * cos(b) - 5 * cos(2 * b) - 2 * cos(3 * b) - cos(4 * b))
+            return SIMD3(x, y + 2, depth) / 15
+        case .star:
+            // A puffy five-pointed star facing the camera.
+            let dir = SIMD3<Float>(sin(phi) * cos(theta), cos(phi), sin(phi) * sin(theta))
+            let angle = atan2(dir.y, dir.x)
+            let point = pow(abs(cos(2.5 * (angle - .pi / 2))), 4)
+            let flat = sqrt(max(0, 1 - dir.z * dir.z))
+            let r = 0.5 + 0.75 * point * flat
+            return SIMD3(dir.x * r, dir.y * r, dir.z * 0.42)
+        case .teardrop:
+            // A falling drop: round at the bottom, pointed at the top.
+            let t = phi
+            let radius = sin(t) * pow(sin(t / 2), 1.6) * 0.95
+            return SIMD3(cos(theta) * radius, cos(t) * 1.05 - 0.15, sin(theta) * radius)
+        case .shards:
+            // A cluster of crystal spikes bursting out of a core.
+            let dir = SIMD3<Float>(sin(phi) * cos(theta), cos(phi), sin(phi) * sin(theta))
+            var spike: Float = 0
+            for s in shardDirections { spike = max(spike, pow(max(0, dot(dir, s.direction)), 18) * s.length) }
+            return dir * (0.42 + spike)
+        default:
+            return SIMD3(sin(phi) * cos(theta), cos(phi), sin(phi) * sin(theta))
+        }
+    }
+
+    private static let shardDirections: [(direction: SIMD3<Float>, length: Float)] = {
+        var generator = SplitMix(seed: 7)
+        return (0..<11).map { i -> (direction: SIMD3<Float>, length: Float) in
+            let z = generator.next() * 2 - 1
+            let a = generator.next() * 2 * .pi
+            let r = sqrt(max(0, 1 - z * z))
+            return (SIMD3(r * cos(a), z, r * sin(a)), 0.55 + generator.next() * 0.7 + (i == 0 ? 0.2 : 0))
+        }
+    }()
+
+    private struct SplitMix {
+        var state: UInt64
+        init(seed: UInt64) { state = seed }
+        mutating func next() -> Float {
+            state &+= 0x9E3779B97F4A7C15
+            var z = state
+            z = (z ^ (z >> 30)) &* 0xBF58476D1CE4E5B9
+            z = (z ^ (z >> 27)) &* 0x94D049BB133111EB
+            z ^= z >> 31
+            return Float(z >> 40) / Float(1 << 24)
+        }
+    }
+
+    private static func surface(_ kind: ShapeKind, segments: Int, rings: Int, faceted flat: Bool) -> [ShapeVertex] {
+        var grid: [[SIMD3<Float>]] = []
+        for j in 0...rings {
+            var row: [SIMD3<Float>] = []
+            for i in 0...segments {
+                row.append(point(kind, Float(i) / Float(segments), Float(j) / Float(rings)))
+            }
+            grid.append(row)
+        }
+        let center = grid.flatMap { $0 }.reduce(SIMD3<Float>(0, 0, 0), +) / Float((rings + 1) * (segments + 1))
+        func smoothNormal(_ i: Int, _ j: Int) -> SIMD3<Float> {
+            let du = grid[j][(i + 1) % segments] - grid[j][(i + segments - 1) % segments]
+            let dv = grid[min(rings, j + 1)][i] - grid[max(0, j - 1)][i]
+            var n = cross(du, dv)
+            let p = grid[j][i]
+            if simd_length_squared(n) < 1e-10 { n = p - center }
+            n = normalize(n)
+            return dot(n, p - center) < 0 ? -n : n
+        }
+        var vertices: [ShapeVertex] = []
+        for j in 0..<rings {
+            for i in 0..<segments {
+                let corners = [(i, j), (i + 1, j), (i + 1, j + 1), (i, j + 1)]
+                let p = corners.map { grid[$0.1][$0.0] }
+                for tri in [(0, 1, 2), (0, 2, 3)] {
+                    let a = p[tri.0], b = p[tri.1], c = p[tri.2]
+                    let face = cross(b - a, c - a)
+                    guard simd_length_squared(face) > 1e-12 else { continue }
+                    if flat {
+                        var n = normalize(face)
+                        if dot(n, (a + b + c) / 3 - center) < 0 { n = -n }
+                        vertices += [a, b, c].map { ShapeVertex(position: SIMD4($0, 1), normal: SIMD4(n, 0)) }
+                    } else {
+                        for k in [tri.0, tri.1, tri.2] {
+                            let (ci, cj) = corners[k]
+                            vertices.append(ShapeVertex(position: SIMD4(p[k], 1), normal: SIMD4(smoothNormal(ci % segments, cj), 0)))
+                        }
+                    }
+                }
+            }
+        }
+        return vertices
     }
 
     private static func uniqueEdges(_ triangles: Triangles) -> [(SIMD3<Float>, SIMD3<Float>)] {

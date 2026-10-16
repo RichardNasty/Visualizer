@@ -251,15 +251,17 @@ final class Renderer: NSObject, MTKViewDelegate {
             encoder.setVertexBytes(&u, length: MemoryLayout<FrameUniforms>.stride, index: 1)
             let solid = 1 - scene.xbox * 0.75
             for character in scene.characters {
-                guard let mesh = meshes[character.shape] else { continue }
-                var s = ShapeUniforms(
-                    model: Self.model(position: character.position, rotation: character.rotation, scale: character.scale),
-                    color: SIMD4(character.color, character.brightness * solid),
-                    params: SIMD4(character.displacement, time, 0, 0)
-                )
-                encoder.setVertexBuffer(mesh.buffer, offset: 0, index: 0)
-                encoder.setVertexBytes(&s, length: MemoryLayout<ShapeUniforms>.stride, index: 2)
-                encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: mesh.count)
+                for (shape, weight, scale) in Self.morphLayers(character) {
+                    guard let mesh = meshes[shape] else { continue }
+                    var s = ShapeUniforms(
+                        model: Self.model(position: character.position, rotation: Self.facing(character, shape), scale: character.scale * scale),
+                        color: SIMD4(character.color, character.brightness * solid * weight),
+                        params: SIMD4(character.displacement, time, 0, 0)
+                    )
+                    encoder.setVertexBuffer(mesh.buffer, offset: 0, index: 0)
+                    encoder.setVertexBytes(&s, length: MemoryLayout<ShapeUniforms>.stride, index: 2)
+                    encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: mesh.count)
+                }
             }
             if crispCount > 0 {
                 encoder.setRenderPipelineState(linePipeline)
@@ -439,13 +441,15 @@ final class Renderer: NSObject, MTKViewDelegate {
 
         // The characters as glowing wireframes.
         for character in scene.characters {
-            guard let lines = edges[character.shape] else { continue }
-            let model = Self.model(position: character.position, rotation: character.rotation, scale: character.scale * 1.08)
+            for (shape, layer, scale) in Self.morphLayers(character) {
+            guard let lines = edges[shape] else { continue }
+            let model = Self.model(position: character.position, rotation: Self.facing(character, shape), scale: character.scale * 1.08 * scale)
             let color = mixColor(character.color, neon, 0.45)
-            let alpha = character.brightness * (0.15 + weight * 1.1)
+            let alpha = character.brightness * (0.15 + weight * 1.1) * layer
             for (a, b) in lines {
                 let wa = model * SIMD4(a, 1), wb = model * SIMD4(b, 1)
                 crispLines.segment(SIMD3(wa.x, wa.y, wa.z), SIMD3(wb.x, wb.y, wb.z), width: 0.03, color: color, alpha: alpha)
+            }
             }
         }
     }
@@ -519,6 +523,26 @@ final class Renderer: NSObject, MTKViewDelegate {
         crispLines.polyline(points, closed: true, width: { _ in 0.03 + audio.level * 0.03 },
                             color: { hsv(hue + 0.12 * sin(Float($0) / Float(count) * 2 * .pi), 0.7, 1) },
                             alpha: { _ in brightness })
+    }
+
+    // MARK: - Mood shape changes
+
+    /// The shapes to draw for a character mid-change: the old one shrinks and fades as the new one swells in.
+    private static func morphLayers(_ c: CharacterRender) -> [(ShapeKind, Float, Float)] {
+        let t = c.morph * c.morph * (3 - 2 * c.morph)
+        guard t < 0.999, c.previousShape != c.shape else { return [(c.shape, 1, 1)] }
+        let pop = 1 + 0.25 * sin(t * .pi)
+        return [(c.previousShape, 1 - t, (1 - 0.6 * t) * pop), (c.shape, t, (0.4 + 0.6 * t) * pop)]
+    }
+
+    /// Hearts, stars and drops only read from the front, so they sway gently instead of tumbling.
+    private static func facing(_ c: CharacterRender, _ shape: ShapeKind) -> SIMD3<Float> {
+        switch shape {
+        case .heart, .star, .teardrop:
+            return SIMD3(sin(c.rotation.x) * 0.25, sin(c.rotation.y * 0.8) * 0.6, sin(c.rotation.z) * 0.15)
+        default:
+            return c.rotation
+        }
     }
 
     // MARK: - Matrices
