@@ -254,7 +254,7 @@ final class Renderer: NSObject, MTKViewDelegate {
                 for (shape, weight, scale) in Self.morphLayers(character) {
                     guard let mesh = meshes[shape] else { continue }
                     var s = ShapeUniforms(
-                        model: Self.model(position: character.position, rotation: Self.facing(character, shape), scale: character.scale * scale),
+                        model: Self.model(position: character.position, rotation: Self.facing(character, shape, camera.eye), scale: character.scale * scale),
                         color: SIMD4(character.color, character.brightness * solid * weight),
                         params: SIMD4(character.displacement, time, 0, 0)
                     )
@@ -443,7 +443,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         for character in scene.characters {
             for (shape, layer, scale) in Self.morphLayers(character) {
             guard let lines = edges[shape] else { continue }
-            let model = Self.model(position: character.position, rotation: Self.facing(character, shape), scale: character.scale * 1.08 * scale)
+            let model = Self.model(position: character.position, rotation: Self.facing(character, shape, camera.eye), scale: character.scale * 1.08 * scale)
             let color = mixColor(character.color, neon, 0.45)
             let alpha = character.brightness * (0.15 + weight * 1.1) * layer
             for (a, b) in lines {
@@ -535,11 +535,14 @@ final class Renderer: NSObject, MTKViewDelegate {
         return [(c.previousShape, 1 - t, (1 - 0.6 * t) * pop), (c.shape, t, (0.4 + 0.6 * t) * pop)]
     }
 
-    /// Hearts, stars and drops only read from the front, so they sway gently instead of tumbling.
-    private static func facing(_ c: CharacterRender, _ shape: ShapeKind) -> SIMD3<Float> {
+    /// Hearts, stars and drops only read from the front, so they turn to face the viewer and sway gently.
+    private static func facing(_ c: CharacterRender, _ shape: ShapeKind, _ eye: SIMD3<Float>) -> SIMD3<Float> {
         switch shape {
         case .heart, .star, .teardrop:
-            return SIMD3(sin(c.rotation.x) * 0.25, sin(c.rotation.y * 0.8) * 0.6, sin(c.rotation.z) * 0.15)
+            let toEye = eye - c.position
+            let yaw = atan2(toEye.x, toEye.z)
+            let pitch = -atan2(toEye.y, simd_length(SIMD2(toEye.x, toEye.z)))
+            return SIMD3(pitch + sin(c.rotation.x) * 0.15, yaw + sin(c.rotation.y * 0.8) * 0.35, sin(c.rotation.z) * 0.12)
         default:
             return c.rotation
         }

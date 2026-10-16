@@ -49,18 +49,61 @@ enum MeshFactory {
                 }
             }
             return result
-        case .heart, .star, .teardrop, .shards:
-            let segments = 18, rings = 10
+        case .heart, .star, .teardrop:
+            // A clean neon outline, extruded front to back like old vector graphics.
+            let count = 80
+            let depth: Float = kind == .teardrop ? 0 : 0.2
+            let loop = (0..<count).map { outline(kind, Float($0) / Float(count)) }
             var result: [(SIMD3<Float>, SIMD3<Float>)] = []
-            for i in 0..<segments {
-                for j in 0..<rings {
-                    let u0 = Float(i) / Float(segments), u1 = Float(i + 1) / Float(segments)
-                    let v0 = Float(j) / Float(rings), v1 = Float(j + 1) / Float(rings)
-                    result.append((point(kind, u0, v0), point(kind, u1, v0)))
-                    result.append((point(kind, u0, v0), point(kind, u0, v1)))
+            for i in 0..<count {
+                let a = loop[i], b = loop[(i + 1) % count]
+                result.append((a + SIMD3(0, 0, depth), b + SIMD3(0, 0, depth)))
+                if depth > 0 {
+                    result.append((a - SIMD3(0, 0, depth), b - SIMD3(0, 0, depth)))
+                    if i % 8 == 0 { result.append((a + SIMD3(0, 0, depth), a - SIMD3(0, 0, depth))) }
+                } else {
+                    // The drop is round: add a crossing outline so it reads in 3D.
+                    let c = SIMD3(0, a.y, a.x), d = SIMD3(0, b.y, b.x)
+                    result.append((c, d))
                 }
             }
             return result
+        case .shards:
+            // Each crystal spike as a sharp pyramid of light.
+            var result: [(SIMD3<Float>, SIMD3<Float>)] = []
+            for spike in shardDirections {
+                let tip = spike.direction * (0.42 + spike.length)
+                let side = normalize(cross(spike.direction, abs(spike.direction.y) < 0.9 ? SIMD3(0, 1, 0) : SIMD3(1, 0, 0)))
+                let other = cross(spike.direction, side)
+                let base = (0..<3).map { k -> SIMD3<Float> in
+                    let a = Float(k) / 3 * 2 * .pi
+                    return spike.direction * 0.3 + (side * cos(a) + other * sin(a)) * 0.16
+                }
+                for k in 0..<3 {
+                    result.append((base[k], tip))
+                    result.append((base[k], base[(k + 1) % 3]))
+                }
+            }
+            return result
+        }
+    }
+
+    /// The flat silhouette of a mood shape, s from 0 to 1 around it.
+    static func outline(_ kind: ShapeKind, _ s: Float) -> SIMD3<Float> {
+        let t = s * 2 * .pi
+        switch kind {
+        case .heart:
+            let x = 15 * sin(t) - 4 * sin(3 * t)
+            let y = 15 * cos(t) - 5 * cos(2 * t) - 2 * cos(3 * t) - cos(4 * t)
+            return SIMD3(x, y + 2, 0) / 15
+        case .star:
+            let r = 0.5 + 0.75 * pow(abs(cos(2.5 * (t - .pi / 2))), 4)
+            return SIMD3(cos(t) * r, sin(t) * r, 0)
+        case .teardrop:
+            let radius = sin(t) * pow(abs(sin(t / 2)), 1.6) * 0.95
+            return SIMD3(radius, cos(t) * 1.05 - 0.15, 0)
+        default:
+            return SIMD3(cos(t), sin(t), 0)
         }
     }
 
