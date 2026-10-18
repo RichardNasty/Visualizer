@@ -2,14 +2,14 @@ import simd
 
 /// How the note lines are grouped by color.
 enum NoteColors: String, CaseIterable, Identifiable {
-    case byNote, byOctave
+    case byOctave, byNote
 
     var id: String { rawValue }
 
     var label: String {
         switch self {
-        case .byNote: return "By note name (every C one color, every D another, and so on)"
-        case .byOctave: return "By octave (low notes red, rising through the rainbow to violet)"
+        case .byOctave: return "By octave: bass notes red, rising through orange, yellow, green and blue to violet"
+        case .byNote: return "By note name: every C one color, every D another, and so on"
         }
     }
 }
@@ -55,16 +55,18 @@ struct NoteField {
     }
 
     static func color(_ n: Int, _ grouping: NoteColors) -> SIMD3<Float> {
-        let pitchClass = n % 12
+        let pitchClass = Float(n % 12)
         let octave = n / 12
         switch grouping {
+        case .byOctave:
+            // Each octave is one color family; within it every note is its own shade, C deepest, B palest.
+            let hues: [Float] = [0.0, 0.07, 0.14, 0.33, 0.56, 0.76]
+            let shade = pitchClass / 11
+            return hsv(hues[min(octave, hues.count - 1)], 0.95 - shade * 0.3, 0.72 + shade * 0.28)
         case .byNote:
             // Every C shares a color, every C# the next one round the color wheel, and so on.
             // Higher octaves are paler versions of the same color.
-            return hsv(Float(pitchClass) / 12, 0.92 - Float(octave) * 0.09, 0.8 + Float(octave) * 0.04)
-        case .byOctave:
-            let hues: [Float] = [0.0, 0.08, 0.15, 0.33, 0.55, 0.75]
-            return hsv(hues[min(octave, hues.count - 1)], 0.85, 0.95)
+            return hsv(pitchClass / 12, 0.92 - Float(octave) * 0.09, 0.8 + Float(octave) * 0.04)
         }
     }
 
@@ -110,8 +112,11 @@ struct NoteField {
         let pulseStrength = 1.8 * exp(-scene.linePulse * 1.4)
         let pulseCenter = 1 - scene.linePulse / 1.2
         let trailGain = 0.05 * (0.3 + scene.classic)
-        let idle = 0.07 * (1 - dim * 0.7)
+        // Quiet notes still show as faint lines, so every note always has its line.
+        let idle = 0.28 * (1 - dim * 0.7)
         let gap = 1 - shatter * 0.55
+        let tilt: Float = 0.45
+        let discUp = view.up * cos(tilt) - view.forward * sin(tilt)
 
         for n in 0..<count {
             let v = Float(n) / Float(count - 1)
@@ -137,23 +142,23 @@ struct NoteField {
                 let curve = bend * u * u
 
                 // Classic: a stack of flat ribbons facing you, low notes at the bottom.
-                let flatY = (v - 0.5) * 4.8 * spread + side * split * 0.8 + lift + curve * 1.1
+                let flatY = (v - 0.5) * 5.2 * spread + side * split * 0.8 + lift + curve * 1.1
                 let flat = view.right * ((u - 0.5) * 9.2) + view.up * (flatY + push)
 
-                // Magnetosphere: a slowly turning column of rings, low notes at the bottom.
-                let angle = u * 1.85 * .pi + t * 0.12 + v * 1.4
-                let radius = 2.1 + push * 1.3 + side * split * 0.4
-                let ringY = (v - 0.5) * 4.2 * spread + side * split * 0.9 + lift + curve * 0.9
-                let column = SIMD3<Float>(cos(angle) * radius, ringY, sin(angle) * radius)
+                // Magnetosphere: glowing rings one inside the other like a record, low notes in the middle.
+                let discRadius = 0.45 + v * 2.9 * spread + (v < 0.5 ? -0.25 : 0.7) * split + push * 0.8
+                let angle = u * 1.92 * .pi + t * 0.1 * spinDirection + v * 3
+                let disc = view.right * (cos(angle) * discRadius) + discUp * (sin(angle) * discRadius)
+                    + view.up * (lift + curve * 0.6)
 
                 // Xbox: every note a neon ring in a tunnel stretching away from you, low notes nearest.
-                let depth = 2.6 + v * 13.5 * spread + (v < 0.5 ? 0 : split * 3)
+                let depth = 2.2 + v * 8.5 * spread + (v < 0.5 ? 0 : split * 2.5)
                 let spin = u * 1.9 * .pi + noteSeed * 0.13 + t * 0.35 * spinDirection
-                let ringRadius = 1.15 + push * 0.9 + curve * 0.3
+                let ringRadius = 1.6 + push * 0.9 + curve * 0.3
                 let around = view.right * cos(spin) + view.up * sin(spin)
                 let tunnel = view.eye + view.forward * depth + around * ringRadius + view.up * (lift * 0.4)
 
-                positions[k] = flat * wClassic + column * wMagneto + tunnel * wXbox
+                positions[k] = flat * wClassic + disc * wMagneto + tunnel * wXbox
 
                 var glow = idle + h * 1.3
                 let chaseCenter = (t * 0.45 + v * 0.3).truncatingRemainder(dividingBy: 1)
@@ -164,10 +169,11 @@ struct NoteField {
                 glow *= min(1, u / 0.15)
                 let visible = dash - piece < gap
                 alphas[k] = visible ? glow : 0
-                widths[k] = 0.011 + h * 0.045
+                widths[k] = 0.02 + h * 0.05
             }
 
-            let color = Self.color(n, grouping) * (1 - min(0.35, lineEnergy * 0.3)) + SIMD3<Float>(repeating: min(0.35, lineEnergy * 0.3))
+            let whiten = min(0.15, lineEnergy * 0.15)
+            let color = Self.color(n, grouping) * (1 - whiten) + SIMD3<Float>(repeating: whiten)
             let soft = trailGain > 0.02 && lineEnergy > 0.05
             for k in 0..<last {
                 let a = alphas[k]

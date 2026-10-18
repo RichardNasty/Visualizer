@@ -72,7 +72,7 @@ final class Renderer: NSObject, MTKViewDelegate {
     /// Supplies the scene and audio for each frame.
     var frameSource: ((_ dt: Float) -> (SceneState, AudioFeatures))?
     /// How the note lines are colored.
-    var noteColors: NoteColors = .byNote
+    var noteColors: NoteColors = .byOctave
     /// When set, every frame advances by exactly this many seconds (used for preview stills).
     var fixedStep: Float?
 
@@ -190,7 +190,6 @@ final class Renderer: NSObject, MTKViewDelegate {
         // Build this frame's glowing lines.
         trailLines.reset(camera: camera.eye, aspect: aspect)
         crispLines.reset(camera: camera.eye, aspect: aspect)
-        addClassicRibbons(scene: scene, audio: audio, time: time)
         addXbox(scene: scene, audio: audio, time: time, camera: camera)
         addStory(scene: scene, audio: audio, time: time, camera: camera)
         addWaveRing(scene: scene, audio: audio)
@@ -325,7 +324,8 @@ final class Renderer: NSObject, MTKViewDelegate {
         u.beat = audio.beat; u.turbulence = scene.turbulence; u.radial = scene.radial; u.swirl = scene.swirl
         u.gravity = SIMD4(scene.gravity, 0)
         u.bgHue = scene.backgroundHue; u.bgIntensity = scene.backgroundIntensity; u.warp = scene.warp; u.zoom = scene.zoom
-        u.rotate = scene.rotate; u.saturation = scene.saturation; u.particleBright = scene.particleBrightness
+        // Particles stay a soft glow behind the note lines.
+        u.rotate = scene.rotate; u.saturation = scene.saturation; u.particleBright = scene.particleBrightness * 0.5
         u.worlds = SIMD4(scene.classic, scene.magnetosphere, scene.xbox, scene.twirl)
         u.effects = SIMD4(scene.hueDrift, scene.flash, 0, 0)
 
@@ -349,35 +349,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         return u
     }
 
-    // MARK: - Classic iTunes: oscilloscope ribbons that smear into liquid colour
-
-    private func addClassicRibbons(scene: SceneState, audio: AudioFeatures, time: Float) {
-        let weight = scene.classic
-        guard weight > 0.02 else { return }
-        let samples = audio.waveform
-        let count = 160
-        for ribbon in 0..<3 {
-            let r = Float(ribbon)
-            let angle = time * (0.13 + r * 0.05) + r * 2.1
-            let cosA = cos(angle), sinA = sin(angle)
-            let offset = sin(time * 0.37 + r * 1.7) * 0.25
-            let amplitude: Float = 0.28 + audio.level * 0.35
-            var points: [SIMD2<Float>] = []
-            points.reserveCapacity(count)
-            for i in 0..<count {
-                let x = Float(i) / Float(count - 1) * 2.4 - 1.2
-                let sample = samples[(i * 3 + ribbon * 40) % samples.count]
-                let y = offset + sample * amplitude * (1 - abs(x) * 0.35)
-                points.append(SIMD2(x * cosA - y * sinA, x * sinA + y * cosA))
-            }
-            let baseHue = time * 0.05 + r * 0.33
-            trailLines.screenPolyline(points, width: 0.012 + audio.bass * 0.012,
-                                      color: { hsv(baseHue + Float($0) / Float(count) * 0.35, 0.85, 1) },
-                                      alpha: { _ in weight * 0.25 })
-        }
-    }
-
-    // MARK: - Original Xbox: hexagon tunnel, beat spokes, neon wireframes
+    // MARK: - Original Xbox: hexagon tunnel and beat spokes
 
     private func addXbox(scene: SceneState, audio: AudioFeatures, time: Float, camera: Camera) {
         let weight = scene.xbox
@@ -389,7 +361,7 @@ final class Renderer: NSObject, MTKViewDelegate {
             let d = 0.8 + (Float(i) / Float(rings) - scene.tunnelPhase * 0.12).truncatingRemainder(dividingBy: 1).magnitudeWrapped * depth
             let fadeNear = min(1, (d - 0.8) / 1.5)
             let fadeFar = 1 - d / (depth + 0.8)
-            let alpha = weight * fadeNear * fadeFar * (0.2 + audio.bass * 0.3)
+            let alpha = weight * fadeNear * fadeFar * (0.12 + audio.bass * 0.2)
             guard alpha > 0.01 else { continue }
             let center = camera.eye + camera.forward * d
             let radius: Float = 3.0 + audio.bass * 0.5

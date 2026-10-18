@@ -16,7 +16,7 @@ Needs macOS 14.2 or newer.
 ## Using it
 
 - Play music in any app. The visuals follow the beat right away.
-- Every musical note from low C to high B has its own line. A line lights up and ripples while its note is playing, and the last few seconds scroll along it, so you can watch melodies and chords move. Notes are grouped by color: every C shares one color, every D another, and so on. You can switch to grouping by octave under **Visualizer › Settings**.
+- Every musical note from low C to high B has its own line. A line lights up and ripples while its note is playing, and the last few seconds scroll along it, so you can watch melodies and chords move. Notes are grouped by color, one color family per octave: bass notes red, then orange, yellow, green and blue up to violet for the highest notes. Under **Visualizer › Settings** you can group them by note name instead (every C one color, every D another).
 - When the app knows the song (from Music, Spotify, a YouTube tab, or by listening), it looks up the lyrics and stages a story for it. The story moves the lines and the particle clouds: they gather close, split apart, rise, fall or shatter with the lyrics, line by line, and every lyric line sends a pulse of light along them.
 - **Sound output** (speaker button): send the sound to your speakers, Bluetooth headphones or AirPlay speakers.
 - **AirPlay button**: Apple's AirPlay and Bluetooth picker.

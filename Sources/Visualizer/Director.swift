@@ -97,7 +97,7 @@ final class Director {
         switch action {
         case .drift:    return LineMood(spread: 1.0, split: 0, bend: 0, lift: 0, jitter: 0.1, shatter: 0, chase: 0.2, dim: 0.1)
         case .approach: return LineMood(spread: 0.75, split: 0, bend: 0, lift: 0, jitter: 0.05, shatter: 0, chase: 0.45, dim: 0)
-        case .embrace:  return LineMood(spread: 0.45, split: 0, bend: 0, lift: 0.1, jitter: 0, shatter: 0, chase: 0.15, dim: 0)
+        case .embrace:  return LineMood(spread: 0.6, split: 0, bend: 0, lift: 0.1, jitter: 0, shatter: 0, chase: 0.15, dim: 0)
         case .separate: return LineMood(spread: 0.8, split: 1, bend: 0, lift: 0, jitter: 0.05, shatter: 0, chase: 0, dim: 0.3)
         case .chase:    return LineMood(spread: 1.0, split: 0, bend: 0, lift: 0, jitter: 0.15, shatter: 0, chase: 1, dim: 0)
         case .orbit:    return LineMood(spread: 0.9, split: 0, bend: 0, lift: 0, jitter: 0.05, shatter: 0, chase: 0.6, dim: 0)

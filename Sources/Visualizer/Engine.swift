@@ -21,7 +21,7 @@ final class Engine: ObservableObject {
         didSet { UserDefaults.standard.set(useAI, forKey: "useAI") }
     }
     @Published var hasAPIKey = Keychain.load() != nil
-    @Published var noteColors = NoteColors(rawValue: UserDefaults.standard.string(forKey: "noteColors") ?? "") ?? .byNote {
+    @Published var noteColors = NoteColors(rawValue: UserDefaults.standard.string(forKey: "noteColors") ?? "") ?? .byOctave {
         didSet {
             UserDefaults.standard.set(noteColors.rawValue, forKey: "noteColors")
             renderer?.noteColors = noteColors
