@@ -1,0 +1,65 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Tools
+        run: |
+          sw_vers
+          xcodebuild -version
+          swift --version
+
+      - name: Check the shaders compile
+        run: |
+          if ! xcrun -sdk macosx metal -c Shaders/Visualizer.metal -o /tmp/Visualizer.air; then
+            xcodebuild -downloadComponent MetalToolchain || true
+            xcrun -sdk macosx metal -c Shaders/Visualizer.metal -o /tmp/Visualizer.air
+          fi
+
+      - name: Build the app
+        run: ./scripts/build-app.sh
+
+      - name: Self-test
+        env:
+          VISUALIZER_PREVIEW: build/preview
+        run: ./build/Visualizer.app/Contents/MacOS/Visualizer --selftest
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: Visualizer
+          path: |
+            build/Visualizer.zip
+            build/preview/*.png
+
+      - name: Share a test build's stills
+        # Test branches never touch the public download: their stills go to a hidden draft release.
+        if: github.ref != 'refs/heads/main' && github.event_name != 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete preview-build --yes || true
+          gh release create preview-build build/preview/*.png build/preview/scenes/*.png --draft --title "Test build stills" \
+            --notes "Preview stills from a test branch build." --target "$GITHUB_SHA"
+
+      - name: Publish the download
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete current --yes --cleanup-tag || true
+          gh release create current build/Visualizer.zip build/preview/*.png \
+            --title "Visualizer (latest build)" \
+            --notes "Download Visualizer.zip, unzip it, and drag Visualizer into Applications. See the README for first-launch steps." \
+            --target "$GITHUB_SHA"
