@@ -95,10 +95,15 @@ struct NoteField {
         let count = AudioFeatures.noteCount
         let last = Self.points - 1
         let frac = min(1, clock / Self.tick)
-        let total = max(0.001, scene.classic + scene.magnetosphere + scene.xbox)
-        let wClassic = scene.classic / total
-        let wMagneto = scene.magnetosphere / total
-        let wXbox = scene.xbox / total
+        // When the story changes world the lines fold quickly from one layout into the next,
+        // instead of spending seconds tangled halfway between the two.
+        let cw = scene.classic * scene.classic * scene.classic
+        let mw = scene.magnetosphere * scene.magnetosphere * scene.magnetosphere
+        let xw = scene.xbox * scene.xbox * scene.xbox
+        let total = max(0.001, cw + mw + xw)
+        let wClassic = cw / total
+        let wMagneto = mw / total
+        let wXbox = xw / total
 
         let spread = scene.lineSpread
         let split = scene.lineSplit
@@ -141,7 +146,7 @@ struct NoteField {
                 push += shatter * 0.4 * (noise1(noteSeed * 31 + piece) - 0.5)
                 let curve = bend * u * u
 
-                // Classic: a stack of flat ribbons facing you, low notes at the bottom.
+                // Classic: a stack of lines facing you, low notes at the bottom.
                 let flatY = (v - 0.5) * 5.2 * spread + side * split * 0.8 + lift + curve * 1.1
                 let flat = view.right * ((u - 0.5) * 9.2) + view.up * (flatY + push)
 

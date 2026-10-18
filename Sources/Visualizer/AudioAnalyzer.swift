@@ -29,8 +29,9 @@ struct AudioFeatures {
 final class AudioAnalyzer {
     private let fftSize = 2048
     private let log2n: vDSP_Length = 11
-    private let ringMask = 16384 - 1
-    private var ring = [Float](repeating: 0, count: 16384)
+    // Long enough for the note window even when the Mac's audio runs at 192 kHz.
+    private let ringMask = 65_536 - 1
+    private var ring = [Float](repeating: 0, count: 65_536)
     private var writeIndex = 0
     private var sampleRate: Double = 48_000
     private let lock = NSLock()
@@ -103,11 +104,18 @@ final class AudioAnalyzer {
     func analyze(time: Double) -> AudioFeatures {
         let n = fftSize
         lock.lock()
+        let rate = sampleRate
         let start = (writeIndex - n + ring.count) & ringMask
         for i in 0..<n { frame[i] = ring[(start + i) & ringMask] }
-        let noteStart = (writeIndex - noteSize + ring.count) & ringMask
-        for i in 0..<noteSize { noteFrame[i] = ring[(noteStart + i) & ringMask] }
-        let rate = sampleRate
+        // The note window always covers the same stretch of time: at high sample rates, neighbouring samples are
+        // averaged down to about 48 kHz first, so a note lands on the same line whatever the Mac's audio is set to.
+        let step = min(ring.count / noteSize, max(1, Int((rate / 48_000).rounded())))
+        let noteStart = (writeIndex - noteSize * step + ring.count) & ringMask
+        for i in 0..<noteSize {
+            var sum: Float = 0
+            for j in 0..<step { sum += ring[(noteStart + i * step + j) & ringMask] }
+            noteFrame[i] = sum / Float(step)
+        }
         lock.unlock()
 
         // Loudness with automatic gain so quiet and loud songs both fill the screen.
@@ -187,7 +195,7 @@ final class AudioAnalyzer {
             features.beat *= 0.86
         }
 
-        analyzeNotes(rate: rate, silent: silent)
+        analyzeNotes(rate: rate / Double(step), silent: silent)
 
         features.level += ((silent ? 0 : level) - features.level) * 0.3
         features.bass = bass
@@ -214,42 +222,40 @@ final class AudioAnalyzer {
             }
         }
 
+        // Every peak in the spectrum is one tone. Its exact pitch, read from between the bins, picks the single line
+        // it lights, so a note never spills onto its neighbours or across into the next octave.
         let count = AudioFeatures.noteCount
         let binWidth = Float(rate) / Float(n)
-        let quarterTone: Float = pow(2, 1.0 / 24)
-        var raw = [Float](repeating: 0, count: count)
-        for i in 0..<count {
-            let midi = Float(AudioFeatures.lowestNote + i)
-            let frequency: Float = 440 * pow(2, (midi - 69) / 12)
-            let center = frequency / binWidth
-            let low = center / quarterTone
-            let high = center * quarterTone
-            let first = max(1, Int(low.rounded(.down)))
-            let lastBin = min(half - 1, max(first, Int(high.rounded(.up))))
-            let reach = max(1, high - low)
-            var peak: Float = 0
-            for bin in first...lastBin {
-                // Bins count more the closer they sit to the note's exact pitch.
-                let closeness = max(0, 1 - abs(Float(bin) - center) / reach)
-                peak = max(peak, notePower[bin] * closeness)
-            }
-            raw[i] = peak.squareRoot()
-        }
-
-        // Keep the notes that stand out from their neighbours (tones), not broad noise like drums.
+        let lowHz: Float = 440 * pow(2, (Float(AudioFeatures.lowestNote) - 69.5) / 12)
+        let highHz: Float = 440 * pow(2, (Float(AudioFeatures.lowestNote + count) - 69.5) / 12)
+        let firstBin = max(2, Int(lowHz / binWidth) - 1)
+        let lastBin = min(half - 3, Int(highHz / binWidth) + 2)
+        // However quiet the song gets, a tone has to reach a share of its recent loudness to count,
+        // so faint hiss between songs doesn't turn into lines.
+        let minimumPeak = levelPeak * Float(n) * 0.25
+        let gate = 0.04 * max(notePeak * 0.998, minimumPeak)
         var tonal = [Float](repeating: 0, count: count)
-        var loudest: Float = 0
-        for i in 0..<count {
-            var sum: Float = 0
-            var neighbours: Float = 0
-            for j in max(0, i - 4)...min(count - 1, i + 4) where j != i {
-                sum += raw[j]
-                neighbours += 1
+        if firstBin <= lastBin {
+            for k in firstBin...lastBin {
+                let p = notePower[k]
+                guard p > notePower[k - 1], p >= notePower[k + 1] else { continue }
+                let a = log(notePower[k - 1] + 1e-20), b = log(p + 1e-20), c = log(notePower[k + 1] + 1e-20)
+                let curve = a - 2 * b + c
+                let offset: Float = curve < 0 ? 0.5 * (a - c) / curve : 0
+                let height = exp(0.5 * (b - 0.25 * (a - c) * offset))
+                guard height >= gate else { continue }
+                // A tone stands well clear of the spectrum around it; noise and drums don't.
+                let local = notePower[max(1, k - 16)...min(half - 1, k + 16)].sorted()
+                guard p >= 20 * local[local.count / 2] else { continue }
+                let pitch = 12 * log2((Float(k) + offset) * binWidth / 440) + 69
+                let note = Int(pitch.rounded()) - AudioFeatures.lowestNote
+                guard note >= 0, note < count else { continue }
+                tonal[note] = max(tonal[note], height)
             }
-            tonal[i] = max(0, raw[i] - 0.7 * sum / max(1, neighbours))
-            loudest = max(loudest, tonal[i])
         }
-        notePeak = max(notePeak * 0.998, loudest, 1e-4)
+        var loudest: Float = 0
+        for value in tonal { loudest = max(loudest, value) }
+        notePeak = max(notePeak * 0.998, loudest, minimumPeak)
 
         // Each octave keeps its own level so high notes show as clearly as bass notes,
         // but never with so much gain that an empty octave turns its noise into lines.

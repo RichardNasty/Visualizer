@@ -27,7 +27,7 @@ enum StoryAction: String, CaseIterable, Codable {
 
 /// The three visual worlds the story moves between.
 enum StoryWorld: String, CaseIterable, Codable {
-    /// Classic iTunes: liquid colour trails and glowing waveform ribbons. Memory, dreaming, reflection.
+    /// Classic iTunes: liquid colour trails and flowing lines. Memory, dreaming, reflection.
     case classic
     /// Apple Music Magnetosphere: a glowing particle nebula. Longing, tenderness, building up.
     case magnetosphere
@@ -36,7 +36,7 @@ enum StoryWorld: String, CaseIterable, Codable {
 
     var meaning: String {
         switch self {
-        case .classic: return "dreamy liquid colour and flowing waveforms: memories, reflection, intimacy, the quiet verses"
+        case .classic: return "dreamy liquid colour and flowing lines: memories, reflection, intimacy, the quiet verses"
         case .magnetosphere: return "a glowing particle nebula: longing, tenderness, hope, things building up"
         case .xbox: return "neon wireframes rushing through a tunnel with bursts of light: energy, conflict, release, the chorus and the climax"
         }

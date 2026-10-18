@@ -40,12 +40,13 @@ enum RendererError: LocalizedError {
 }
 
 /// Draws one frame by mixing three looks:
-/// classic iTunes (liquid trails and waveform ribbons), Magnetosphere (particle nebula)
+/// classic iTunes (liquid colour trails), Magnetosphere (particle nebula)
 /// and the original Xbox visualizer (neon tunnel, bursts),
 /// with a glowing line for every musical note and rings of light on top.
 final class Renderer: NSObject, MTKViewDelegate {
     static let particleCount = 80_000
-    static let lineCapacity = 240_000
+    /// Room for every note line plus the tunnel, rings and waveform.
+    static let lineCapacity = AudioFeatures.noteCount * (NoteField.points - 1) * 6 + 16_384
 
     let device: MTLDevice
     private let queue: MTLCommandQueue
@@ -67,7 +68,7 @@ final class Renderer: NSObject, MTKViewDelegate {
     private var previous: MTLTexture?
     private var crisp: MTLTexture?
     private var lastTime = CACurrentMediaTime()
-    private var elapsed: Float = 0
+    private var elapsed: Double = 0
 
     /// Supplies the scene and audio for each frame.
     var frameSource: ((_ dt: Float) -> (SceneState, AudioFeatures))?
@@ -174,7 +175,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         let now = CACurrentMediaTime()
         let dt = fixedStep ?? Float(min(0.1, max(0.001, now - lastTime)))
         lastTime = now
-        elapsed += dt
+        elapsed += Double(dt)
         let (scene, audio) = frameSource?(dt) ?? (SceneState(), AudioFeatures())
 
         ensureTextures(width: Int(size.width), height: Int(size.height))
@@ -183,7 +184,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         commands.addCompletedHandler { _ in semaphore.signal() }
 
         let aspect = Float(size.width / size.height)
-        let time = elapsed
+        let time = Float(elapsed)
         let camera = Self.camera(scene)
         var u = uniforms(scene: scene, audio: audio, dt: dt, time: time, aspect: aspect, camera: camera)
 
@@ -211,7 +212,7 @@ final class Renderer: NSObject, MTKViewDelegate {
             compute.endEncoding()
         }
 
-        // Pass 1: everything that leaves liquid trails (previous frame, particles, ribbons).
+        // Pass 1: everything that leaves liquid trails (previous frame, particles, soft copies of the note lines).
         if let encoder = commands.makeRenderCommandEncoder(descriptor: Self.pass(current)) {
             encoder.setRenderPipelineState(composePipeline)
             encoder.setFragmentTexture(previous, index: 0)
@@ -325,7 +326,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         u.gravity = SIMD4(scene.gravity, 0)
         u.bgHue = scene.backgroundHue; u.bgIntensity = scene.backgroundIntensity; u.warp = scene.warp; u.zoom = scene.zoom
         // Particles stay a soft glow behind the note lines.
-        u.rotate = scene.rotate; u.saturation = scene.saturation; u.particleBright = scene.particleBrightness * 0.5
+        u.rotate = scene.rotate; u.saturation = scene.saturation; u.particleBright = scene.particleBrightness * 0.5 * (1 - 0.35 * scene.magnetosphere)
         u.worlds = SIMD4(scene.classic, scene.magnetosphere, scene.xbox, scene.twirl)
         u.effects = SIMD4(scene.hueDrift, scene.flash, 0, 0)
 
@@ -451,18 +452,6 @@ final class Renderer: NSObject, MTKViewDelegate {
             SIMD4(x.z, y.z, z.z, 0),
             SIMD4(-dot(x, eye), -dot(y, eye), -dot(z, eye), 1)
         ))
-    }
-
-    static func model(position: SIMD3<Float>, rotation: SIMD3<Float>, scale: Float) -> simd_float4x4 {
-        let rx = simd_quatf(angle: rotation.x, axis: SIMD3(1, 0, 0))
-        let ry = simd_quatf(angle: rotation.y, axis: SIMD3(0, 1, 0))
-        let rz = simd_quatf(angle: rotation.z, axis: SIMD3(0, 0, 1))
-        var m = simd_float4x4(rz * ry * rx)
-        m.columns.0 *= scale
-        m.columns.1 *= scale
-        m.columns.2 *= scale
-        m.columns.3 = SIMD4(position, 1)
-        return m
     }
 }
 

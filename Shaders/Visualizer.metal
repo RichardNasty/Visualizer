@@ -22,17 +22,6 @@ struct Particle {
     float4 vel;  // xyz + seed
 };
 
-struct ShapeVertex {
-    float4 position;
-    float4 normal;
-};
-
-struct ShapeUniforms {
-    float4x4 model;
-    float4 color;   // rgb + brightness
-    float4 params;  // x displacement, y time
-};
-
 struct LineVertex {
     float4 position;  // w = 1 world space, w = 0 already on screen
     float4 color;     // rgb + brightness
@@ -164,40 +153,7 @@ fragment float4 particleFragment(ParticleOut in [[stage_in]], float2 pc [[point_
     return float4(in.color.rgb * a, a);
 }
 
-// ---------- shapes ----------
-
-struct ShapeOut {
-    float4 position [[position]];
-    float3 normal;
-    float3 view;
-    float4 color;
-};
-
-vertex ShapeOut shapeVertex(const device ShapeVertex *vertices [[buffer(0)]],
-                            constant FrameUniforms &u [[buffer(1)]],
-                            constant ShapeUniforms &s [[buffer(2)]],
-                            uint vid [[vertex_id]]) {
-    ShapeVertex v = vertices[vid];
-    float3 n = v.normal.xyz;
-    float wobble = 0.5 + 0.5 * sin(dot(v.position.xyz, float3(3.1, 2.7, 4.3)) * 2.0 + s.params.y * 3.0);
-    float3 p = v.position.xyz + n * s.params.x * wobble;
-    float4 world = s.model * float4(p, 1.0);
-    ShapeOut o;
-    o.position = u.viewProj * world;
-    o.normal = normalize((s.model * float4(n, 0.0)).xyz);
-    o.view = normalize(u.camPos.xyz - world.xyz);
-    o.color = s.color;
-    return o;
-}
-
-fragment float4 shapeFragment(ShapeOut in [[stage_in]]) {
-    float facing = abs(dot(normalize(in.normal), normalize(in.view)));
-    float rim = pow(1.0 - facing, 2.5);
-    float glow = rim * 1.6 + 0.07;
-    return float4(in.color.rgb * glow * in.color.a, 1.0);
-}
-
-// ---------- waveform ribbon ----------
+// ---------- glowing lines ----------
 
 struct LineOut {
     float4 position [[position]];

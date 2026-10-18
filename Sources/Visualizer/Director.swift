@@ -314,13 +314,14 @@ final class Director {
         scene.rotate = 0.0015 * sin(t * 0.1) + scene.swirl * 0.001 + scene.classic * 0.004 * sin(t * 0.05)
         scene.twirl = scene.classic * (0.4 + audio.mid * 0.6)
         scene.hueDrift = scene.classic * 0.004
-        scene.cameraAngle += dt * (0.04 + energySmooth * 0.08 + scene.xbox * 0.1)
+        scene.cameraAngle = (scene.cameraAngle + dt * (0.04 + energySmooth * 0.08 + scene.xbox * 0.1)).truncatingRemainder(dividingBy: 2 * .pi)
         scene.cameraDistance = mix(scene.cameraDistance, 7.2 - energySmooth * 1.2 + (beat.action == .hide ? 1.2 : 0) + (beat.action == .separate ? 1.5 : 0), rate: 0.6, dt: dt)
         scene.cameraHeight = 0.9 + sin(t * 0.07) * 0.8
         scene.waveHue = scene.backgroundHue + 0.5
         scene.waveTilt = mix(scene.waveTilt, 0.15 + valence * 0.35, rate: 0.6, dt: dt)
         scene.waveAmplitude = 0.35 + energySmooth * 0.5
-        scene.tunnelPhase += dt * (0.25 + energySmooth * 0.5 + audio.bass * 0.8)
+        // Wrapped at the tunnel's own repeat so it never loses precision, however long the app runs.
+        scene.tunnelPhase = (scene.tunnelPhase + dt * (0.25 + energySmooth * 0.5 + audio.bass * 0.8)).truncatingRemainder(dividingBy: 1 / 0.12)
         scene.flash = flash
 
         let mood = Self.lineMood(beat.action)
@@ -332,7 +333,7 @@ final class Director {
         scene.lineShatter = mix(scene.lineShatter, mood.shatter, rate: mood.shatter > scene.lineShatter ? 4 : 1.2, dt: dt)
         scene.lineChase = mix(scene.lineChase, mood.chase, rate: 1.5, dt: dt)
         scene.lineDim = mix(scene.lineDim, mood.dim, rate: 1.2, dt: dt)
-        linePulse += dt
+        linePulse = min(linePulse + dt, 60)
         scene.linePulse = linePulse
         return scene
     }

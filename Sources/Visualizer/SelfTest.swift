@@ -64,18 +64,76 @@ enum SelfTest {
         for i in 0..<10 { features = analyzer.analyze(time: Double(i) / 60) }
         check("analyzer hears bass", features.bass > features.treble && features.bass > 0.2, "bass \(features.bass) treble \(features.treble)")
 
-        // Note lines: an A at 440 Hz should light the A4 line (MIDI 69) and nothing far from it.
-        let noteAnalyzer = AudioAnalyzer()
-        var a440 = (0..<16_384).map { Float(sin(Double($0) * 2 * .pi * 440 / 48_000)) * 0.5 }
-        a440.withUnsafeMutableBufferPointer { noteAnalyzer.push($0.baseAddress!, count: $0.count, sampleRate: 48_000) }
-        var heard = AudioFeatures()
-        for i in 0..<20 { heard = noteAnalyzer.analyze(time: Double(i) / 60) }
-        let expected = 69 - AudioFeatures.lowestNote
-        let strongest = heard.notes.indices.max { heard.notes[$0] < heard.notes[$1] } ?? -1
-        let stray = heard.notes.indices.filter { abs($0 - expected) > 1 }.map { heard.notes[$0] }.max() ?? 0
-        check("analyzer hears the note A", strongest == expected && heard.notes[expected] > 0.5 && stray < 0.2
-              && heard.chroma.indices.max { heard.chroma[$0] < heard.chroma[$1] } == 9,
-              "strongest line \(strongest), A4 \(heard.notes[max(0, expected)]), stray \(stray)")
+        // Note lines: a note lights its own line and nothing else, whatever sample rate the Mac's audio runs at.
+        func listen(_ midis: [Int], rate: Double, amplitude: Float) -> AudioFeatures {
+            let analyzer = AudioAnalyzer()
+            var samples = (0..<32_768).map { i -> Float in
+                var sum: Float = 0
+                for midi in midis {
+                    let frequency = 440 * pow(2, Double(midi - 69) / 12)
+                    sum += Float(sin(Double(i) * 2 * .pi * frequency / rate)) * amplitude
+                }
+                return sum
+            }
+            samples.withUnsafeMutableBufferPointer { analyzer.push($0.baseAddress!, count: $0.count, sampleRate: rate) }
+            var heard = AudioFeatures()
+            for i in 0..<20 { heard = analyzer.analyze(time: Double(i) / 60) }
+            return heard
+        }
+        func brightestOther(_ heard: AudioFeatures, besides lit: [Int]) -> Float {
+            heard.notes.indices.filter { !lit.contains($0) }.map { heard.notes[$0] }.max() ?? 0
+        }
+        var misses: [String] = []
+        for rate in [44_100.0, 48_000, 96_000, 192_000] {
+            for midi in [36, 38, 48, 59, 60, 69, 95, 107] {
+                let heard = listen([midi], rate: rate, amplitude: 0.5)
+                let line = midi - AudioFeatures.lowestNote
+                let strongest = heard.notes.indices.max { heard.notes[$0] < heard.notes[$1] } ?? -1
+                let name = heard.chroma.indices.max { heard.chroma[$0] < heard.chroma[$1] } ?? -1
+                let other = brightestOther(heard, besides: [line])
+                if strongest != line || heard.notes[line] < 0.5 || other > 0.2 || name != midi % 12 {
+                    misses.append("MIDI \(midi) at \(Int(rate)) Hz: brightest line \(strongest), own line \(heard.notes[line]), other \(other)")
+                }
+            }
+        }
+        check("each note lights only its own line", misses.isEmpty, misses.joined(separator: "; "))
+
+        let chord = listen([60, 64, 67], rate: 48_000, amplitude: 0.3)
+        let chordLines = [60, 64, 67].map { $0 - AudioFeatures.lowestNote }
+        let chordOther = brightestOther(chord, besides: chordLines)
+        check("a C major chord lights C, E and G", chordLines.allSatisfy { chord.notes[$0] > 0.5 } && chordOther < 0.2,
+              "C E G \(chordLines.map { chord.notes[$0] }), other \(chordOther)")
+
+        // Noise (hiss, cymbals, the rush of a crowd) has no pitch, so it should light hardly any lines,
+        // while a note played through it still shows.
+        var seed: UInt64 = 12_345
+        func nextNoise() -> Float {
+            seed = seed &* 6_364_136_223_846_793_005 &+ 1_442_695_040_888_963_407
+            return Float(seed >> 40) / Float(1 << 24)
+        }
+        let noiseAnalyzer = AudioAnalyzer()
+        let toneAnalyzer = AudioAnalyzer()
+        var crowd = 0
+        var throughNoise = AudioFeatures()
+        for frame in 0..<60 {
+            var hiss = (0..<800).map { _ in (nextNoise() + nextNoise() + nextNoise() - 1.5) * 0.2 }
+            hiss.withUnsafeMutableBufferPointer { noiseAnalyzer.push($0.baseAddress!, count: $0.count, sampleRate: 48_000) }
+            let heard = noiseAnalyzer.analyze(time: Double(frame + 1) * 800 / 48_000)
+            if frame >= 10 { crowd = max(crowd, heard.notes.filter { $0 > 0.2 }.count) }
+
+            var mix = (0..<800).map { i -> Float in
+                let t = Double(frame * 800 + i) / 48_000
+                let hum = (nextNoise() + nextNoise() + nextNoise() - 1.5) * 0.1
+                return Float(sin(t * 2 * .pi * 440)) * 0.2 + hum
+            }
+            mix.withUnsafeMutableBufferPointer { toneAnalyzer.push($0.baseAddress!, count: $0.count, sampleRate: 48_000) }
+            throughNoise = toneAnalyzer.analyze(time: Double(frame + 1) * 800 / 48_000)
+        }
+        check("noise lights hardly any lines", crowd <= 3, "\(crowd) lines at most")
+        let a4 = 69 - AudioFeatures.lowestNote
+        let noiseOther = brightestOther(throughNoise, besides: [a4])
+        check("a note still shows through noise", throughNoise.notes[a4] > 0.5 && noiseOther < 0.2,
+              "A4 \(throughNoise.notes[a4]), other \(noiseOther)")
 
         // GPU: compile shaders and draw some frames offscreen.
         if let device = MTLCreateSystemDefaultDevice() {
@@ -171,8 +229,8 @@ enum SelfTest {
         guard let target = device.makeTexture(descriptor: descriptor) else { return }
         try? FileManager.default.createDirectory(atPath: folder, withIntermediateDirectories: true)
 
-        // One still per lyric moment: 12.5s embrace, 15s rise, 20s calm.
-        for (index, moment) in [13.5, 17.0, 22.0].enumerated() {
+        // One still per lyric moment, once its world has settled in: 12.5s embrace, 15s rise, 20s calm.
+        for (index, moment) in [14.6, 19.5, 26.0].enumerated() {
             var last: MTLCommandBuffer?
             while clock < moment {
                 clock += 1.0 / 60
