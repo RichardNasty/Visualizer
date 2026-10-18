@@ -7,10 +7,6 @@ struct CharacterRender {
     var rotation: SIMD3<Float>
     var color: SIMD3<Float>
     var brightness: Float
-    var shape: ShapeKind
-    /// The shape it is turning from, and how far through the change it is (0...1).
-    var previousShape: ShapeKind
-    var morph: Float
     var displacement: Float
     var attraction: Float
     /// Recent positions, newest first, so the eye can follow where each character has been.
@@ -66,12 +62,56 @@ struct SceneState {
     var waveAmplitude: Float = 0.5
     var tunnelPhase: Float = 0
     var flash: Float = 0
+
+    // How the story is shaping the note lines.
+    /// Below 1 the lines huddle together, above 1 they fan out.
+    var lineSpread: Float = 1
+    /// Pulls the low and high notes apart into two groups.
+    var lineSplit: Float = 0
+    /// Curves the newest end of every line up (rising) or down (falling).
+    var lineBend: Float = 0
+    var lineLift: Float = 0
+    var lineJitter: Float = 0
+    /// Breaks the lines into scattered pieces.
+    var lineShatter: Float = 0
+    /// A band of light racing along the lines.
+    var lineChase: Float = 0
+    /// Quiets every note that isn't sounding.
+    var lineDim: Float = 0
+    /// Seconds since the last lyric line landed.
+    var linePulse: Float = 10
 }
 
 /// Turns the hidden story (or, without one, an improvised ambient story) plus live audio
-/// into where everything should be this frame. Every lyric line visibly moves the story:
-/// characters travel and leave trails, bonds form and snap, and a ring of light fires.
+/// into where everything should be this frame. The characters are never drawn: they steer the
+/// particle clouds, and the story's moments gather, split, bend and break the note lines.
+/// Every lyric line sends a pulse along the lines and fires a ring of light.
 final class Director {
+    private struct LineMood {
+        var spread: Float, split: Float, bend: Float, lift: Float
+        var jitter: Float, shatter: Float, chase: Float, dim: Float
+    }
+
+    /// What each moment of the story does to the note lines.
+    private static func lineMood(_ action: StoryAction) -> LineMood {
+        switch action {
+        case .drift:    return LineMood(spread: 1.0, split: 0, bend: 0, lift: 0, jitter: 0.1, shatter: 0, chase: 0.2, dim: 0.1)
+        case .approach: return LineMood(spread: 0.75, split: 0, bend: 0, lift: 0, jitter: 0.05, shatter: 0, chase: 0.45, dim: 0)
+        case .embrace:  return LineMood(spread: 0.45, split: 0, bend: 0, lift: 0.1, jitter: 0, shatter: 0, chase: 0.15, dim: 0)
+        case .separate: return LineMood(spread: 0.8, split: 1, bend: 0, lift: 0, jitter: 0.05, shatter: 0, chase: 0, dim: 0.3)
+        case .chase:    return LineMood(spread: 1.0, split: 0, bend: 0, lift: 0, jitter: 0.15, shatter: 0, chase: 1, dim: 0)
+        case .orbit:    return LineMood(spread: 0.9, split: 0, bend: 0, lift: 0, jitter: 0.05, shatter: 0, chase: 0.6, dim: 0)
+        case .rise:     return LineMood(spread: 1.0, split: 0, bend: 1, lift: 0.5, jitter: 0.05, shatter: 0, chase: 0.3, dim: 0)
+        case .fall:     return LineMood(spread: 1.0, split: 0, bend: -1, lift: -0.5, jitter: 0, shatter: 0, chase: 0, dim: 0.4)
+        case .shatter:  return LineMood(spread: 1.2, split: 0.2, bend: 0, lift: 0, jitter: 0.6, shatter: 1, chase: 0.2, dim: 0)
+        case .bloom:    return LineMood(spread: 1.3, split: 0, bend: 0.3, lift: 0.1, jitter: 0.1, shatter: 0, chase: 0.4, dim: 0)
+        case .hide:     return LineMood(spread: 0.6, split: 0, bend: 0, lift: -0.3, jitter: 0.05, shatter: 0, chase: 0, dim: 0.85)
+        case .reveal:   return LineMood(spread: 1.1, split: 0, bend: 0.2, lift: 0.1, jitter: 0, shatter: 0, chase: 0.3, dim: 0)
+        case .storm:    return LineMood(spread: 1.15, split: 0.1, bend: 0, lift: 0, jitter: 1, shatter: 0.35, chase: 0.7, dim: 0)
+        case .calm:     return LineMood(spread: 0.9, split: 0, bend: 0, lift: 0, jitter: 0, shatter: 0, chase: 0, dim: 0.2)
+        }
+    }
+
     private struct Staging {
         var radius: Float, height: Float, scale: Float, brightness: Float
         var swirl: Float, turbulence: Float, radial: Float, gravity: Float
@@ -108,9 +148,6 @@ final class Director {
         var rotation = SIMD3<Float>(0, 0, 0)
         var phase: Float
         var trail: [SIMD3<Float>] = []
-        var current: ShapeKind? = nil
-        var previous: ShapeKind? = nil
-        var morph: Float = 1
     }
 
     /// Song position in seconds, if known.
@@ -131,6 +168,7 @@ final class Director {
     private var bonds: [Float] = [0, 0, 0]
     private var shockwaves: [Shockwave] = []
     private var trailClock: Float = 0
+    private var linePulse: Float = 10
 
     private var ambientBeat = StoryBeat(time: 0, action: .drift, actors: [], valence: 0.2, energy: 0.4, hue: 0.6)
     private var ambientUntil: Double = 0
@@ -199,16 +237,6 @@ final class Director {
             }
             target += SIMD3(sin(t * 0.31 + actor.phase), sin(t * 0.23 + actor.phase * 1.7), cos(t * 0.27 + actor.phase)) * 0.18
 
-            // Transform into the shape of the moment: a heart in love, a star in joy, a tear in sorrow.
-            let wanted = slot != nil ? (beat.action.moodShape ?? actor.shape) : actor.shape
-            if actor.current == nil { actor.current = wanted; actor.previous = wanted }
-            if actor.current != wanted {
-                actor.previous = actor.current
-                actor.current = wanted
-                actor.morph = 0
-            }
-            actor.morph = min(1, actor.morph + dt * 1.4)
-
             actor.position = mix(actor.position, target, rate: 1.1 * drive, dt: dt)
             actor.scale = mix(actor.scale, scale, rate: 1.8, dt: dt)
             actor.brightness = mix(actor.brightness, brightness, rate: 1.8, dt: dt)
@@ -231,9 +259,6 @@ final class Director {
                 rotation: actor.rotation,
                 color: hsv(actor.hue, saturation, 1),
                 brightness: actor.brightness * (0.75 + audio.level * 0.5 + flash),
-                shape: actor.current ?? actor.shape,
-                previousShape: actor.previous ?? actor.shape,
-                morph: actor.morph,
                 displacement: 0.03 + audio.bass * 0.15 + (beat.action == .shatter ? 0.3 : 0) + burst * 0.25,
                 attraction: slot == nil ? 0.4 : 1.0 + (beat.action == .embrace ? 0.6 : 0),
                 trail: actor.trail
@@ -297,6 +322,18 @@ final class Director {
         scene.waveAmplitude = 0.35 + energySmooth * 0.5
         scene.tunnelPhase += dt * (0.25 + energySmooth * 0.5 + audio.bass * 0.8)
         scene.flash = flash
+
+        let mood = Self.lineMood(beat.action)
+        scene.lineSpread = mix(scene.lineSpread, mood.spread, rate: 1.4, dt: dt)
+        scene.lineSplit = mix(scene.lineSplit, mood.split, rate: 1.4, dt: dt)
+        scene.lineBend = mix(scene.lineBend, mood.bend, rate: 1.2, dt: dt)
+        scene.lineLift = mix(scene.lineLift, mood.lift, rate: 1.0, dt: dt)
+        scene.lineJitter = mix(scene.lineJitter, mood.jitter * (0.6 + audio.treble * 0.6), rate: 2, dt: dt)
+        scene.lineShatter = mix(scene.lineShatter, mood.shatter, rate: mood.shatter > scene.lineShatter ? 4 : 1.2, dt: dt)
+        scene.lineChase = mix(scene.lineChase, mood.chase, rate: 1.5, dt: dt)
+        scene.lineDim = mix(scene.lineDim, mood.dim, rate: 1.2, dt: dt)
+        linePulse += dt
+        scene.linePulse = linePulse
         return scene
     }
 
@@ -340,6 +377,7 @@ final class Director {
 
     /// A lyric line just landed: make it visible.
     private func trigger(_ beat: StoryBeat, previousWorld: StoryWorld?) {
+        linePulse = 0
         let cast = beat.actors.isEmpty ? Array(actors.indices) : beat.actors
         for i in cast where actors.indices.contains(i) {
             let color = hsv(actors[i].hue, 0.8, 1)

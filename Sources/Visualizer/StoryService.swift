@@ -104,9 +104,9 @@ final class StoryService {
 
         Read the lyrics closely and find the story underneath them: who is in it, what they want, what happens between them, and how it ends.
 
-        Cast 1 to 3 characters (people, forces or feelings in the song). Each becomes an abstract glowing shape: one of sphere, cube, torus, tetrahedron, octahedron, icosahedron (they also transform into a heart, star, teardrop or shards on their own when the action calls for it). Give each a hue from 0 to 1 (0 red, 0.08 orange, 0.15 yellow, 0.33 green, 0.5 cyan, 0.62 blue, 0.75 violet, 0.9 pink) that suits who they are.
+        The picture is made of glowing lines, one for every musical note in the song, plus clouds of light particles. Cast 1 to 3 characters (people, forces or feelings in the song). They are never drawn: each one is an invisible force that a particle cloud follows. Give each a hue from 0 to 1 (0 red, 0.08 orange, 0.15 yellow, 0.33 green, 0.5 cyan, 0.62 blue, 0.75 violet, 0.9 pink) that suits who they are.
 
-        Then write exactly one beat for every lyric line, using that line's timestamp as "time". Each beat stages what is happening in the story at that moment with one action:
+        Then write exactly one beat for every lyric line, using that line's timestamp as "time". Each beat stages what is happening in the story at that moment with one action, which moves the characters and also shapes the note lines (embrace gathers them close, separate splits them in two, rise and fall bend them, shatter breaks them apart):
         \(actions)
 
         For each beat also give:
@@ -121,7 +121,7 @@ final class StoryService {
         Give the story an arc that builds, turns and resolves across the song. Repeated choruses should echo each other with the same staging, and the final beats should land the ending.
 
         Respond with only a JSON object and nothing else, in this shape:
-        {"title": "a short name for the story", "characters": [{"name": "...", "shape": "torus", "hue": 0.6}], "beats": [{"time": 12.3, "action": "approach", "actors": [0, 1], "valence": 0.2, "energy": 0.5, "hue": 0.6, "world": "magnetosphere"}]}
+        {"title": "a short name for the story", "characters": [{"name": "...", "hue": 0.6}], "beats": [{"time": 12.3, "action": "approach", "actors": [0, 1], "valence": 0.2, "energy": 0.5, "hue": 0.6, "world": "magnetosphere"}]}
         """
     }
 
@@ -139,7 +139,7 @@ final class StoryService {
             "max_tokens": 16000,
             "output_config": ["effort": "low"],
             "fallbacks": "default",
-            "system": "You are the choreographer for an abstract music visualizer. You turn a song's lyrics into a hidden visual story told only through the movement of glowing 3D shapes, particle clouds and light. No words or pictures are ever shown, so the story has to live in motion, distance, colour and energy.",
+            "system": "You are the choreographer for an abstract music visualizer. You turn a song's lyrics into a hidden visual story told only through the movement of glowing lines (one for every musical note), particle clouds and light. No words or pictures are ever shown, so the story has to live in motion, distance, colour and energy.",
             "messages": [["role": "user", "content": Self.prompt(track: track, lyrics: lyrics)]],
         ]
         request.httpBody = try JSONSerialization.data(withJSONObject: body)

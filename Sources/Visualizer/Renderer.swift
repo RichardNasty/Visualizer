@@ -22,12 +22,6 @@ struct FrameUniforms {
     var effects = SIMD4<Float>(0, 0, 0, 0)
 }
 
-struct ShapeUniforms {
-    var model: simd_float4x4
-    var color: SIMD4<Float>
-    var params: SIMD4<Float>
-}
-
 struct Particle {
     var pos: SIMD4<Float>
     var vel: SIMD4<Float>
@@ -47,38 +41,40 @@ enum RendererError: LocalizedError {
 
 /// Draws one frame by mixing three looks:
 /// classic iTunes (liquid trails and waveform ribbons), Magnetosphere (particle nebula)
-/// and the original Xbox visualizer (neon wireframes, tunnel, bursts),
-/// with the story's characters, their trails, bonds and rings of light on top.
+/// and the original Xbox visualizer (neon tunnel, bursts),
+/// with a glowing line for every musical note and rings of light on top.
 final class Renderer: NSObject, MTKViewDelegate {
     static let particleCount = 80_000
-    static let lineCapacity = 120_000
+    static let lineCapacity = 240_000
 
     let device: MTLDevice
     private let queue: MTLCommandQueue
     private let updatePipeline: MTLComputePipelineState
     private let particlePipeline: MTLRenderPipelineState
-    private let shapePipeline: MTLRenderPipelineState
     private let linePipeline: MTLRenderPipelineState
     private let composePipeline: MTLRenderPipelineState
     private var presentPipelines: [MTLPixelFormat: MTLRenderPipelineState] = [:]
     private let library: MTLLibrary
     private let particleBuffer: MTLBuffer
-    private var meshes: [ShapeKind: (buffer: MTLBuffer, count: Int)] = [:]
-    private var edges: [ShapeKind: [(SIMD3<Float>, SIMD3<Float>)]] = [:]
     private var trailBuffers: [MTLBuffer] = []
     private var crispBuffers: [MTLBuffer] = []
     private var trailLines = LineBatch(capacity: Renderer.lineCapacity)
     private var crispLines = LineBatch(capacity: Renderer.lineCapacity)
+    private var notes = NoteField()
     private let inFlight = DispatchSemaphore(value: 3)
     private var frameIndex = 0
     private var current: MTLTexture?
     private var previous: MTLTexture?
     private var crisp: MTLTexture?
-    private var startTime = CACurrentMediaTime()
     private var lastTime = CACurrentMediaTime()
+    private var elapsed: Float = 0
 
     /// Supplies the scene and audio for each frame.
     var frameSource: ((_ dt: Float) -> (SceneState, AudioFeatures))?
+    /// How the note lines are colored.
+    var noteColors: NoteColors = .byNote
+    /// When set, every frame advances by exactly this many seconds (used for preview stills).
+    var fixedStep: Float?
 
     init(device: MTLDevice? = MTLCreateSystemDefaultDevice()) throws {
         guard let device, let queue = device.makeCommandQueue() else { throw RendererError.noGPU }
@@ -111,7 +107,6 @@ final class Renderer: NSObject, MTKViewDelegate {
 
         updatePipeline = try device.makeComputePipelineState(function: try function("updateParticles"))
         particlePipeline = try pipeline("particleVertex", "particleFragment", additive: true)
-        shapePipeline = try pipeline("shapeVertex", "shapeFragment", additive: true)
         linePipeline = try pipeline("lineVertex", "lineFragment", additive: true)
         composePipeline = try pipeline("screenVertex", "composeFragment", additive: false)
 
@@ -125,16 +120,6 @@ final class Renderer: NSObject, MTKViewDelegate {
         }
         particleBuffer = buffer
 
-        var meshes: [ShapeKind: (buffer: MTLBuffer, count: Int)] = [:]
-        var edges: [ShapeKind: [(SIMD3<Float>, SIMD3<Float>)]] = [:]
-        for kind in ShapeKind.allCases {
-            var vertices = MeshFactory.make(kind)
-            guard let b = device.makeBuffer(bytes: &vertices, length: MemoryLayout<ShapeVertex>.stride * vertices.count) else {
-                throw RendererError.setup("Could not allocate shapes")
-            }
-            meshes[kind] = (b, vertices.count)
-            edges[kind] = MeshFactory.edges(kind)
-        }
         var trailBuffers: [MTLBuffer] = []
         var crispBuffers: [MTLBuffer] = []
         for _ in 0..<3 {
@@ -145,8 +130,6 @@ final class Renderer: NSObject, MTKViewDelegate {
             trailBuffers.append(a)
             crispBuffers.append(b)
         }
-        self.meshes = meshes
-        self.edges = edges
         self.trailBuffers = trailBuffers
         self.crispBuffers = crispBuffers
         super.init()
@@ -189,8 +172,9 @@ final class Renderer: NSObject, MTKViewDelegate {
     func renderFrame(to target: MTLTexture, size: CGSize, beforeCommit: ((MTLCommandBuffer) -> Void)? = nil) {
         inFlight.wait()
         let now = CACurrentMediaTime()
-        let dt = Float(min(0.1, max(0.001, now - lastTime)))
+        let dt = fixedStep ?? Float(min(0.1, max(0.001, now - lastTime)))
         lastTime = now
+        elapsed += dt
         let (scene, audio) = frameSource?(dt) ?? (SceneState(), AudioFeatures())
 
         ensureTextures(width: Int(size.width), height: Int(size.height))
@@ -199,7 +183,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         commands.addCompletedHandler { _ in semaphore.signal() }
 
         let aspect = Float(size.width / size.height)
-        let time = Float(now - startTime)
+        let time = elapsed
         let camera = Self.camera(scene)
         var u = uniforms(scene: scene, audio: audio, dt: dt, time: time, aspect: aspect, camera: camera)
 
@@ -210,6 +194,10 @@ final class Renderer: NSObject, MTKViewDelegate {
         addXbox(scene: scene, audio: audio, time: time, camera: camera)
         addStory(scene: scene, audio: audio, time: time, camera: camera)
         addWaveRing(scene: scene, audio: audio)
+        notes.update(dt: dt, audio: audio)
+        notes.build(crisp: &crispLines, trails: &trailLines, scene: scene, audio: audio, time: time,
+                    view: NoteField.View(eye: camera.eye, forward: camera.forward, right: camera.right, up: camera.up),
+                    colors: noteColors)
         let slot = frameIndex % 3
         let trailCount = upload(trailLines, to: trailBuffers[slot])
         let crispCount = upload(crispLines, to: crispBuffers[slot])
@@ -245,24 +233,8 @@ final class Renderer: NSObject, MTKViewDelegate {
             encoder.endEncoding()
         }
 
-        // Pass 2: sharp things drawn fresh every frame (shapes, wireframes, bonds, rings).
+        // Pass 2: sharp lines drawn fresh every frame (note lines, tunnel, rings).
         if let encoder = commands.makeRenderCommandEncoder(descriptor: Self.pass(crisp)) {
-            encoder.setRenderPipelineState(shapePipeline)
-            encoder.setVertexBytes(&u, length: MemoryLayout<FrameUniforms>.stride, index: 1)
-            let solid = 1 - scene.xbox * 0.75
-            for character in scene.characters {
-                for (shape, weight, scale) in Self.morphLayers(character) {
-                    guard let mesh = meshes[shape] else { continue }
-                    var s = ShapeUniforms(
-                        model: Self.model(position: character.position, rotation: Self.facing(character, shape, camera.eye), scale: character.scale * scale),
-                        color: SIMD4(character.color, character.brightness * solid * weight),
-                        params: SIMD4(character.displacement, time, 0, 0)
-                    )
-                    encoder.setVertexBuffer(mesh.buffer, offset: 0, index: 0)
-                    encoder.setVertexBytes(&s, length: MemoryLayout<ShapeUniforms>.stride, index: 2)
-                    encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: mesh.count)
-                }
-            }
             if crispCount > 0 {
                 encoder.setRenderPipelineState(linePipeline)
                 encoder.setVertexBuffer(crispBuffers[slot], offset: 0, index: 0)
@@ -363,7 +335,12 @@ final class Renderer: NSObject, MTKViewDelegate {
             guard chars.indices.contains(i) else { return SIMD4(0, 0, 0, 0.5) }
             return SIMD4(chars[i].position, chars[i].attraction)
         }
+        // The particle clouds take the colors of the notes sounding most strongly.
+        let particleColors = NoteField.particleColors(audio, noteColors)
         func color(_ i: Int) -> SIMD4<Float> {
+            if let particleColors, particleColors.indices.contains(i) {
+                return SIMD4(particleColors[i].color, particleColors[i].brightness)
+            }
             guard chars.indices.contains(i) else { return SIMD4(0.6, 0.7, 1, 1) }
             return SIMD4(chars[i].color, chars[i].brightness)
         }
@@ -396,7 +373,7 @@ final class Renderer: NSObject, MTKViewDelegate {
             let baseHue = time * 0.05 + r * 0.33
             trailLines.screenPolyline(points, width: 0.012 + audio.bass * 0.012,
                                       color: { hsv(baseHue + Float($0) / Float(count) * 0.35, 0.85, 1) },
-                                      alpha: { _ in weight * 0.55 })
+                                      alpha: { _ in weight * 0.25 })
         }
     }
 
@@ -412,7 +389,7 @@ final class Renderer: NSObject, MTKViewDelegate {
             let d = 0.8 + (Float(i) / Float(rings) - scene.tunnelPhase * 0.12).truncatingRemainder(dividingBy: 1).magnitudeWrapped * depth
             let fadeNear = min(1, (d - 0.8) / 1.5)
             let fadeFar = 1 - d / (depth + 0.8)
-            let alpha = weight * fadeNear * fadeFar * (0.35 + audio.bass * 0.5)
+            let alpha = weight * fadeNear * fadeFar * (0.2 + audio.bass * 0.3)
             guard alpha > 0.01 else { continue }
             let center = camera.eye + camera.forward * d
             let radius: Float = 3.0 + audio.bass * 0.5
@@ -438,58 +415,11 @@ final class Renderer: NSObject, MTKViewDelegate {
                                          colorA: neon, alphaA: spokeAlpha, colorB: neon, alphaB: 0)
             }
         }
-
-        // The characters as glowing wireframes.
-        for character in scene.characters {
-            for (shape, layer, scale) in Self.morphLayers(character) {
-            guard let lines = edges[shape] else { continue }
-            let model = Self.model(position: character.position, rotation: Self.facing(character, shape, camera.eye), scale: character.scale * 1.08 * scale)
-            let color = mixColor(character.color, neon, 0.45)
-            let alpha = character.brightness * (0.15 + weight * 1.1) * layer
-            for (a, b) in lines {
-                let wa = model * SIMD4(a, 1), wb = model * SIMD4(b, 1)
-                crispLines.segment(SIMD3(wa.x, wa.y, wa.z), SIMD3(wb.x, wb.y, wb.z), width: 0.03, color: color, alpha: alpha)
-            }
-            }
-        }
     }
 
-    // MARK: - The story: trails, bonds and rings of light
+    // MARK: - The story: rings of light on every lyric line
 
     private func addStory(scene: SceneState, audio: AudioFeatures, time: Float, camera: Camera) {
-        for character in scene.characters where character.trail.count > 2 {
-            let trail = [character.position] + character.trail
-            let n = Float(trail.count)
-            let head = 0.16 * max(0.4, character.scale)
-            let brightness = character.brightness
-            crispLines.polyline(trail, width: { head * (1 - Float($0) / n) },
-                                color: { _ in character.color },
-                                alpha: { brightness * 0.9 * pow(1 - Float($0) / n, 1.5) })
-            // A softer copy feeds the liquid trails.
-            trailLines.polyline(trail, width: { head * 1.6 * (1 - Float($0) / n) },
-                                color: { _ in character.color },
-                                alpha: { brightness * 0.06 * (1 - Float($0) / n) })
-        }
-
-        for tether in scene.tethers {
-            let segments = 40
-            let mid = (tether.a + tether.b) * 0.5 + SIMD3(0, 0.5 * (1 - tether.strength), 0)
-            var points: [SIMD3<Float>] = []
-            for i in 0...segments {
-                let s = Float(i) / Float(segments)
-                let a = tether.a + (mid - tether.a) * s
-                let b = mid + (tether.b - mid) * s
-                var p = a + (b - a) * s
-                let wobble = sin(s * .pi) * (0.06 + audio.treble * 0.2) * sin(time * 4 + s * 14)
-                p += camera.up * wobble
-                points.append(p)
-            }
-            let strength = tether.strength
-            crispLines.polyline(points, width: { _ in 0.02 + 0.05 * strength + audio.bass * 0.02 },
-                                color: { mixColor(tether.colorA, tether.colorB, Float($0) / Float(segments)) },
-                                alpha: { _ in min(1.2, strength * 1.1) })
-        }
-
         for wave in scene.shockwaves {
             let segments = 56
             var points: [SIMD3<Float>] = []
@@ -519,33 +449,10 @@ final class Renderer: NSObject, MTKViewDelegate {
             points.append(SIMD3(p.x, p.y * cos(tilt) - p.z * sin(tilt), p.y * sin(tilt) + p.z * cos(tilt)))
         }
         let hue = scene.waveHue
-        let brightness = (0.3 + audio.level * 0.8) * weight
+        let brightness = (0.3 + audio.level * 0.8) * weight * 0.5
         crispLines.polyline(points, closed: true, width: { _ in 0.03 + audio.level * 0.03 },
                             color: { hsv(hue + 0.12 * sin(Float($0) / Float(count) * 2 * .pi), 0.7, 1) },
                             alpha: { _ in brightness })
-    }
-
-    // MARK: - Mood shape changes
-
-    /// The shapes to draw for a character mid-change: the old one shrinks and fades as the new one swells in.
-    private static func morphLayers(_ c: CharacterRender) -> [(ShapeKind, Float, Float)] {
-        let t = c.morph * c.morph * (3 - 2 * c.morph)
-        guard t < 0.999, c.previousShape != c.shape else { return [(c.shape, 1, 1)] }
-        let pop = 1 + 0.25 * sin(t * .pi)
-        return [(c.previousShape, 1 - t, (1 - 0.6 * t) * pop), (c.shape, t, (0.4 + 0.6 * t) * pop)]
-    }
-
-    /// Hearts, stars and drops only read from the front, so they turn to face the viewer and sway gently.
-    private static func facing(_ c: CharacterRender, _ shape: ShapeKind, _ eye: SIMD3<Float>) -> SIMD3<Float> {
-        switch shape {
-        case .heart, .star, .teardrop:
-            let toEye = eye - c.position
-            let yaw = atan2(toEye.x, toEye.z)
-            let pitch = -atan2(toEye.y, simd_length(SIMD2(toEye.x, toEye.z)))
-            return SIMD3(pitch + sin(c.rotation.x) * 0.15, yaw + sin(c.rotation.y * 0.8) * 0.35, sin(c.rotation.z) * 0.12)
-        default:
-            return c.rotation
-        }
     }
 
     // MARK: - Matrices

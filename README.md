@@ -1,6 +1,6 @@
 # Visualizer
 
-A Mac music visualizer that listens to whatever your Mac is playing (Spotify, Apple Music, YouTube, games, anything) and turns each song into a hidden story told only with particles, glowing 3D shapes and a waveform.
+A Mac music visualizer that listens to whatever your Mac is playing (Spotify, Apple Music, YouTube, games, anything) and turns each song into a hidden story told only with glowing lines (one for every musical note), particles and a waveform.
 
 ## Install
 
@@ -16,7 +16,8 @@ Needs macOS 14.2 or newer.
 ## Using it
 
 - Play music in any app. The visuals follow the beat right away.
-- When the app knows the song (from Music, Spotify, a YouTube tab, or by listening), it looks up the lyrics and stages a story for it. The characters are the shapes, and how they move, meet, drift apart, rise or shatter follows the lyrics line by line.
+- Every musical note from low C to high B has its own line. A line lights up and ripples while its note is playing, and the last few seconds scroll along it, so you can watch melodies and chords move. Notes are grouped by color: every C shares one color, every D another, and so on. You can switch to grouping by octave under **Visualizer › Settings**.
+- When the app knows the song (from Music, Spotify, a YouTube tab, or by listening), it looks up the lyrics and stages a story for it. The story moves the lines and the particle clouds: they gather close, split apart, rise, fall or shatter with the lyrics, line by line, and every lyric line sends a pulse of light along them.
 - **Sound output** (speaker button): send the sound to your speakers, Bluetooth headphones or AirPlay speakers.
 - **AirPlay button**: Apple's AirPlay and Bluetooth picker.
 - **Show on a TV**: use AirPlay screen mirroring from Control Center, then click the full-screen button.

@@ -21,6 +21,12 @@ final class Engine: ObservableObject {
         didSet { UserDefaults.standard.set(useAI, forKey: "useAI") }
     }
     @Published var hasAPIKey = Keychain.load() != nil
+    @Published var noteColors = NoteColors(rawValue: UserDefaults.standard.string(forKey: "noteColors") ?? "") ?? .byNote {
+        didSet {
+            UserDefaults.standard.set(noteColors.rawValue, forKey: "noteColors")
+            renderer?.noteColors = noteColors
+        }
+    }
 
     let renderer: Renderer?
     private let analyzer = AudioAnalyzer()
@@ -55,6 +61,7 @@ final class Engine: ObservableObject {
             return (self.director.update(dt: dt, audio: audio), audio)
         }
         director.songPosition = { [weak self] in self?.clock.position }
+        renderer?.noteColors = noteColors
     }
 
     func start() {

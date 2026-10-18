@@ -164,6 +164,12 @@ struct SettingsView: View {
             }
             Section("Display") {
                 Toggle("Show the song name for a few seconds", isOn: $engine.showSongTitle)
+                Picker("Color the note lines", selection: $engine.noteColors) {
+                    ForEach(NoteColors.allCases) { option in
+                        Text(option.label).tag(option)
+                    }
+                }
+                .pickerStyle(.radioGroup)
             }
         }
         .formStyle(.grouped)

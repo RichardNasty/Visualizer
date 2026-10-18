@@ -4,6 +4,10 @@ import Foundation
 struct AudioFeatures {
     static let bandCount = 48
     static let waveformCount = 512
+    /// One line per musical note, six octaves from C2 (about 65 Hz) to B7 (about 3950 Hz).
+    static let noteCount = 72
+    /// MIDI number of the lowest note (C2).
+    static let lowestNote = 36
 
     var bands = [Float](repeating: 0, count: AudioFeatures.bandCount)
     var waveform = [Float](repeating: 0, count: AudioFeatures.waveformCount)
@@ -14,6 +18,10 @@ struct AudioFeatures {
     /// 1 on a detected beat, decaying towards 0 afterwards.
     var beat: Float = 0
     var silent = true
+    /// How strongly each musical note is sounding right now, 0...1, lowest note first.
+    var notes = [Float](repeating: 0, count: AudioFeatures.noteCount)
+    /// The same folded into the 12 note names, C first.
+    var chroma = [Float](repeating: 0, count: 12)
 }
 
 /// Turns raw samples into smoothed, auto-levelled features the visuals can react to.
@@ -35,6 +43,19 @@ final class AudioAnalyzer {
     private var imag: [Float]
     private var magnitudes: [Float]
 
+    // A longer window for telling neighbouring musical notes apart.
+    private let noteSize = 8192
+    private let noteLog2n: vDSP_Length = 13
+    private let noteSetup: FFTSetup
+    private var noteWindow: [Float]
+    private var noteFrame: [Float]
+    private var noteWindowed: [Float]
+    private var noteReal: [Float]
+    private var noteImag: [Float]
+    private var notePower: [Float]
+    private var notePeak: Float = 1e-4
+    private var octavePeaks = [Float](repeating: 1e-4, count: AudioFeatures.noteCount / 12)
+
     private var features = AudioFeatures()
     private var bandPeak: Float = 1e-3
     private var levelPeak: Float = 0.02
@@ -53,9 +74,21 @@ final class AudioAnalyzer {
         real = [Float](repeating: 0, count: fftSize / 2)
         imag = [Float](repeating: 0, count: fftSize / 2)
         magnitudes = [Float](repeating: 0, count: fftSize / 2)
+
+        noteSetup = vDSP_create_fftsetup(noteLog2n, FFTRadix(kFFTRadix2))!
+        noteWindow = [Float](repeating: 0, count: noteSize)
+        vDSP_hann_window(&noteWindow, vDSP_Length(noteSize), Int32(vDSP_HANN_NORM))
+        noteFrame = [Float](repeating: 0, count: noteSize)
+        noteWindowed = [Float](repeating: 0, count: noteSize)
+        noteReal = [Float](repeating: 0, count: noteSize / 2)
+        noteImag = [Float](repeating: 0, count: noteSize / 2)
+        notePower = [Float](repeating: 0, count: noteSize / 2)
     }
 
-    deinit { vDSP_destroy_fftsetup(fftSetup) }
+    deinit {
+        vDSP_destroy_fftsetup(fftSetup)
+        vDSP_destroy_fftsetup(noteSetup)
+    }
 
     func push(_ samples: UnsafePointer<Float>, count: Int, sampleRate: Double) {
         lock.lock()
@@ -72,6 +105,8 @@ final class AudioAnalyzer {
         lock.lock()
         let start = (writeIndex - n + ring.count) & ringMask
         for i in 0..<n { frame[i] = ring[(start + i) & ringMask] }
+        let noteStart = (writeIndex - noteSize + ring.count) & ringMask
+        for i in 0..<noteSize { noteFrame[i] = ring[(noteStart + i) & ringMask] }
         let rate = sampleRate
         lock.unlock()
 
@@ -152,11 +187,87 @@ final class AudioAnalyzer {
             features.beat *= 0.86
         }
 
+        analyzeNotes(rate: rate, silent: silent)
+
         features.level += ((silent ? 0 : level) - features.level) * 0.3
         features.bass = bass
         features.mid = mid
         features.treble = treble
         features.silent = silent
         return features
+    }
+
+    /// Measures how strongly each of the 72 notes is sounding.
+    private func analyzeNotes(rate: Double, silent: Bool) {
+        let n = noteSize
+        let half = n / 2
+        vDSP_vmul(noteFrame, 1, noteWindow, 1, &noteWindowed, 1, vDSP_Length(n))
+        noteReal.withUnsafeMutableBufferPointer { realPointer in
+            noteImag.withUnsafeMutableBufferPointer { imagPointer in
+                var split = DSPSplitComplex(realp: realPointer.baseAddress!, imagp: imagPointer.baseAddress!)
+                noteWindowed.withUnsafeBytes { raw in
+                    let complex = raw.bindMemory(to: DSPComplex.self)
+                    vDSP_ctoz(complex.baseAddress!, 2, &split, 1, vDSP_Length(half))
+                }
+                vDSP_fft_zrip(noteSetup, &split, 1, noteLog2n, FFTDirection(FFT_FORWARD))
+                vDSP_zvmags(&split, 1, &notePower, 1, vDSP_Length(half))
+            }
+        }
+
+        let count = AudioFeatures.noteCount
+        let binWidth = Float(rate) / Float(n)
+        let quarterTone: Float = pow(2, 1.0 / 24)
+        var raw = [Float](repeating: 0, count: count)
+        for i in 0..<count {
+            let midi = Float(AudioFeatures.lowestNote + i)
+            let frequency: Float = 440 * pow(2, (midi - 69) / 12)
+            let center = frequency / binWidth
+            let low = center / quarterTone
+            let high = center * quarterTone
+            let first = max(1, Int(low.rounded(.down)))
+            let lastBin = min(half - 1, max(first, Int(high.rounded(.up))))
+            let reach = max(1, high - low)
+            var peak: Float = 0
+            for bin in first...lastBin {
+                // Bins count more the closer they sit to the note's exact pitch.
+                let closeness = max(0, 1 - abs(Float(bin) - center) / reach)
+                peak = max(peak, notePower[bin] * closeness)
+            }
+            raw[i] = peak.squareRoot()
+        }
+
+        // Keep the notes that stand out from their neighbours (tones), not broad noise like drums.
+        var tonal = [Float](repeating: 0, count: count)
+        var loudest: Float = 0
+        for i in 0..<count {
+            var sum: Float = 0
+            var neighbours: Float = 0
+            for j in max(0, i - 4)...min(count - 1, i + 4) where j != i {
+                sum += raw[j]
+                neighbours += 1
+            }
+            tonal[i] = max(0, raw[i] - 0.7 * sum / max(1, neighbours))
+            loudest = max(loudest, tonal[i])
+        }
+        notePeak = max(notePeak * 0.998, loudest, 1e-4)
+
+        // Each octave keeps its own level so high notes show as clearly as bass notes,
+        // but never with so much gain that an empty octave turns its noise into lines.
+        for octave in octavePeaks.indices {
+            var octaveLoudest: Float = 0
+            for i in (octave * 12)..<(octave * 12 + 12) { octaveLoudest = max(octaveLoudest, tonal[i]) }
+            octavePeaks[octave] = max(octavePeaks[octave] * 0.997, octaveLoudest, notePeak * 0.15)
+        }
+
+        var chroma = [Float](repeating: 0, count: 12)
+        for i in 0..<count {
+            let relative = min(1, tonal[i] / octavePeaks[i / 12])
+            let target: Float = silent || tonal[i] < notePeak * 0.04 ? 0 : pow(relative, 1.4)
+            let current = features.notes[i]
+            let speed: Float = target > current ? 0.55 : 0.1
+            features.notes[i] = current + (target - current) * speed
+            chroma[i % 12] += features.notes[i]
+        }
+        for c in 0..<12 { features.chroma[c] = min(1, chroma[c] * 0.6) }
     }
 }

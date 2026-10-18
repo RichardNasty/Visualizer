@@ -64,10 +64,24 @@ enum SelfTest {
         for i in 0..<10 { features = analyzer.analyze(time: Double(i) / 60) }
         check("analyzer hears bass", features.bass > features.treble && features.bass > 0.2, "bass \(features.bass) treble \(features.treble)")
 
+        // Note lines: an A at 440 Hz should light the A4 line (MIDI 69) and nothing far from it.
+        let noteAnalyzer = AudioAnalyzer()
+        var a440 = (0..<16_384).map { Float(sin(Double($0) * 2 * .pi * 440 / 48_000)) * 0.5 }
+        a440.withUnsafeMutableBufferPointer { noteAnalyzer.push($0.baseAddress!, count: $0.count, sampleRate: 48_000) }
+        var heard = AudioFeatures()
+        for i in 0..<20 { heard = noteAnalyzer.analyze(time: Double(i) / 60) }
+        let expected = 69 - AudioFeatures.lowestNote
+        let strongest = heard.notes.indices.max { heard.notes[$0] < heard.notes[$1] } ?? -1
+        let stray = heard.notes.indices.filter { abs($0 - expected) > 1 }.map { heard.notes[$0] }.max() ?? 0
+        check("analyzer hears the note A", strongest == expected && heard.notes[expected] > 0.5 && stray < 0.2
+              && heard.chroma.indices.max { heard.chroma[$0] < heard.chroma[$1] } == 9,
+              "strongest line \(strongest), A4 \(heard.notes[max(0, expected)]), stray \(stray)")
+
         // GPU: compile shaders and draw some frames offscreen.
         if let device = MTLCreateSystemDefaultDevice() {
             do {
                 let renderer = try Renderer(device: device)
+                renderer.fixedStep = 1 / 60
                 let director = Director()
                 renderer.frameSource = { dt in (director.update(dt: dt, audio: audio), audio) }
                 let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .bgra8Unorm, width: 640, height: 360, mipmapped: false)
@@ -105,7 +119,11 @@ enum SelfTest {
     /// Renders a few stills of a story playing to fake music, for the README and release page.
     private static func savePreviews(to folder: String, story: Story?) {
         guard let device = MTLCreateSystemDefaultDevice(), let renderer = try? Renderer(device: device) else { return }
+        renderer.fixedStep = 1 / 60
         let width = 1280, height = 720
+        // Fake music for the note lines: a bass note and chord changing every two seconds, a melody on top.
+        let chords: [[Int]] = [[0, 4, 7], [9, 0, 4], [5, 9, 0], [7, 11, 2]]
+        let melody = [12, 14, 16, 19, 16, 14, 12, 11]
         let director = Director()
         director.story = story
         var clock = 0.0
@@ -121,6 +139,24 @@ enum SelfTest {
             audio.treble = 0.3 + 0.2 * sin(t * 11)
             audio.level = 0.6 + 0.3 * sin(t * 1.3)
             audio.beat = fmod(t, 0.5) < 0.05 ? 1 : 0
+            var notes = [Float](repeating: 0, count: AudioFeatures.noteCount)
+            let chord = chords[Int(t / 2) % chords.count]
+            let bar = 1 - Float(fmod(Double(t), 2)) / 2 * 0.5
+            notes[12 + chord[0]] = 0.9 * bar
+            for pitchClass in chord {
+                notes[24 + pitchClass] = 0.7 * bar
+                notes[36 + pitchClass] = 0.45 * bar
+            }
+            let step = Int(t * 4) % melody.count
+            let melodyNote = 36 + chord[0] + melody[step]
+            notes[melodyNote] = max(notes[melodyNote], 0.95 - Float(fmod(Double(t * 4), 1)) * 0.4)
+            notes[60 + (step * 5) % 12] = 0.3
+            audio.notes = notes
+            audio.chroma = (0..<12).map { pitchClass -> Float in
+                var sum: Float = 0
+                for n in stride(from: pitchClass, to: AudioFeatures.noteCount, by: 12) { sum += notes[n] }
+                return min(1, sum * 0.6)
+            }
             audio.waveform = (0..<AudioFeatures.waveformCount).map { i -> Float in
                 let x = Float(i)
                 let a: Float = sin(x * 0.09 + t * 20) * 0.6

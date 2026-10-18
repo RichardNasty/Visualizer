@@ -51,20 +51,6 @@ enum StoryWorld: String, CaseIterable, Codable {
 
 enum ShapeKind: String, CaseIterable, Codable {
     case sphere, cube, torus, tetrahedron, octahedron, icosahedron
-    case heart, star, teardrop, shards
-}
-
-extension StoryAction {
-    /// The shape a character turns into while this is happening to them, so the mood reads at a glance.
-    var moodShape: ShapeKind? {
-        switch self {
-        case .embrace, .approach: return .heart
-        case .bloom, .rise, .reveal: return .star
-        case .fall, .separate: return .teardrop
-        case .shatter, .storm: return .shards
-        case .drift, .chase, .orbit, .hide, .calm: return nil
-        }
-    }
 }
 
 struct StoryCharacter: Codable {
