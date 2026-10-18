@@ -43,6 +43,16 @@ jobs:
             build/Visualizer.zip
             build/preview/*.png
 
+      - name: Share a test build's stills
+        # Test branches never touch the public download: their stills go to a hidden draft release.
+        if: github.ref != 'refs/heads/main' && github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete test-build --yes || true
+          gh release create test-build build/preview/*.png --draft --title "Test build stills" \
+            --notes "Preview stills from a test branch build." --target "$GITHUB_SHA"
+
       - name: Publish the download
         if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
         env:
