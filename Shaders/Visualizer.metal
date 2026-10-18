@@ -58,6 +58,14 @@ static float lookup(constant float *data, float x) {
     return mix(data[i], data[j], f - float(i));
 }
 
+// Folds a point into one wedge of a six-way kaleidoscope (12 mirror images).
+static float2 fold6(float2 p) {
+    float seg = 2.0 * M_PI_F / 6.0;
+    float th = atan2(p.y, p.x);
+    th = abs(fmod(th + 4.0 * M_PI_F, seg) - seg * 0.5);
+    return length(p) * float2(cos(th), sin(th));
+}
+
 // ---------- motion: where each pixel's previous colour comes from ----------
 
 static float2 warpScene(int id, float2 p, constant Uniforms &u) {
@@ -83,7 +91,7 @@ static float2 warpScene(int id, float2 p, constant Uniforms &u) {
     case 2: { // Liquid: the classic iTunes current rising like smoke
         float2 q = p;
         q.x += k * 0.0035 * sin(p.y * 6.0 + mt);
-        q.y -= k * (0.0025 + 0.004 * b + 0.006 * pulse);
+        q.y -= k * (0.0016 + 0.0025 * b + 0.004 * pulse);
         q += k * 0.0018 * float2(sin(p.y * 13.0 + mt * 1.7), cos(p.x * 9.0 - mt * 1.3));
         return q;
     }
@@ -92,11 +100,7 @@ static float2 warpScene(int id, float2 p, constant Uniforms &u) {
         return rotate2(p, a) * (1.0 + 0.004 * k * (1.0 + b + 2.0 * pulse));
     }
     case 4: { // Kaleidoscope: six mirrored wedges that keep folding into each other
-        float seg = 2.0 * M_PI_F / 6.0;
-        float th = atan2(p.y, p.x);
-        th = abs(fmod(th + 4.0 * M_PI_F, seg) - seg * 0.5);
-        float2 q = r * float2(cos(th), sin(th));
-        q = rotate2(q, 0.004 * k);
+        float2 q = rotate2(fold6(p), 0.003 * k);
         return q * (1.0 - (0.006 + 0.01 * b + 0.02 * pulse) * k);
     }
     default: { // Shockwave: rings ripple out from each beat
@@ -121,7 +125,7 @@ static float3 drawScene(int id, float2 p, constant Uniforms &u, constant float *
     switch (id) {
     case 0: { // a breathing waveform ring and treble sparks
         float R = 0.2 + 0.05 * b + 0.06 * pulse + 0.07 * gain * lookup(wave, x);
-        col += palette(0.45 + 0.5 * x, u) * glow(abs(r - R), 0.0035) * 0.55 * energy;
+        col += palette(0.45 + 0.5 * x, u) * glow(abs(r - R), 0.003) * 0.32 * energy;
         float2 cell = floor(p * 60.0);
         float h = hash21(cell + floor(u.time.x * 10.0));
         if (h > 0.9975 - 0.004 * saturate(tr - 0.6)) {
@@ -140,8 +144,8 @@ static float3 drawScene(int id, float2 p, constant Uniforms &u, constant float *
     case 2: { // two oscilloscope lines, mirrored
         float2 q = rotate2(p, 0.15 * sin(rot * 0.5));
         float xs = q.x / u.time.w + 0.5;
-        float y1 = -0.12 + 0.16 * gain * lookup(wave, xs);
-        float y2 = 0.12 + 0.12 * gain * lookup(wave, 1.0 - xs);
+        float y1 = -0.3 + 0.14 * gain * lookup(wave, xs);
+        float y2 = -0.16 + 0.1 * gain * lookup(wave, 1.0 - xs);
         float fade = smoothstep(0.0, 0.12, xs) * (1.0 - smoothstep(0.88, 1.0, xs));
         col += palette(0.75, u) * glow(abs(q.y - y1), 0.003) * 0.5 * energy * fade;
         col += palette(0.4, u) * glow(abs(q.y - y2), 0.0025) * 0.35 * energy * fade;
@@ -154,17 +158,29 @@ static float3 drawScene(int id, float2 p, constant Uniforms &u, constant float *
             float rad = 0.17 + 0.1 * sin(mt * 0.37 + fi * 1.7) + 0.04 * b;
             float2 c = rad * float2(cos(a), sin(a));
             float size = 0.004 + 0.006 * b + 0.006 * kick;
-            col += palette(0.5 + 0.25 * fi, u) * glow(length(p - c), size) * 0.6 * energy;
+            col += palette(0.5 + 0.25 * fi, u) * glow(length(p - c), size) * 0.9 * energy;
         }
         col += palette(1.0, u) * glow(r, 0.01 + 0.03 * pulse) * 0.25 * pulse;
         break;
     }
     case 4: { // a waveform laid along one wedge, mirrored six ways by the motion
-        float2 q = rotate2(p, rot * 0.3);
-        float d = abs(q.y - 0.06 * gain * lookup(wave, saturate(r * 2.0)));
-        float inside = (1.0 - smoothstep(0.3, 0.48, r)) * step(0.0, q.x);
-        col += palette(0.3 + r * 1.4, u) * glow(d, 0.0025) * 0.5 * energy * inside;
-        col += palette(0.9, u) * glow(r, 0.008) * 0.4 * pulse;
+        float2 f = fold6(p);
+        float seg = 2.0 * M_PI_F / 6.0;
+        float a0 = seg * 0.25 + 0.12 * sin(rot);
+        float2 dir = float2(cos(a0), sin(a0));
+        float along = dot(f, dir);
+        float across = dot(f, float2(-dir.y, dir.x));
+        float d = abs(across - 0.035 * gain * lookup(wave, saturate(along * 2.2)));
+        float inside = 1.0 - smoothstep(0.3, 0.46, along);
+        col += palette(0.3 + along * 1.4, u) * glow(d, 0.0025) * 0.35 * energy * inside;
+        for (int i = 0; i < 2; i++) {
+            float fi = float(i);
+            float rad = 0.12 + 0.1 * sin(mt * 0.45 + fi * 2.0) + 0.03 * b;
+            float ang = seg * 0.25 + 0.2 * sin(mt * 0.7 + fi * 1.3);
+            float2 c = rad * float2(cos(ang), sin(ang));
+            col += palette(0.6 + 0.3 * fi, u) * glow(length(f - c), 0.004 + 0.004 * kick) * 0.5 * energy;
+        }
+        col += palette(0.9, u) * glow(r, 0.008) * 0.3 * pulse;
         break;
     }
     default: { // spectrum spokes radiating from the centre
@@ -173,8 +189,8 @@ static float3 drawScene(int id, float2 p, constant Uniforms &u, constant float *
         float L = 0.05 + 0.32 * lookup(spec, xb);
         float da = abs(fract(x * bins) - 0.5) / bins * M_PI_F * r;
         float along = (1.0 - smoothstep(L - 0.03, L, r)) * smoothstep(0.03, 0.06, r);
-        col += palette(0.3 + 0.7 * r / max(L, 0.05), u) * (1.0 - smoothstep(0.0, 0.003, da)) * along * 0.35 * energy;
-        col += palette(1.0, u) * glow(r, 0.02 + 0.05 * pulse) * 0.3 * pulse;
+        col += palette(0.3 + 0.7 * r / max(L, 0.05), u) * (1.0 - smoothstep(0.0, 0.003, da)) * along * 0.1 * energy;
+        col += palette(1.0, u) * glow(r, 0.01 + 0.02 * pulse) * 0.15 * pulse;
         break;
     }
     }
@@ -225,9 +241,9 @@ fragment float4 present_fragment(VOut in [[stage_in]],
     bloom += frame.sample(s, in.uv, level(4.0)).rgb * 0.20;
     bloom += frame.sample(s, in.uv, level(5.0)).rgb * 0.16;
     bloom += frame.sample(s, in.uv, level(6.0)).rgb * 0.12;
-    c += bloom * (0.45 + 0.25 * u.beat.x);
+    c += bloom * (0.32 + 0.2 * u.beat.x);
 
-    c = 1.0 - exp(-c * 1.35);
+    c = 1.0 - exp(-c * 1.15);
     float2 p = (in.uv - 0.5) * float2(u.time.w, 1.0);
     c *= 1.0 - 0.45 * smoothstep(0.35, 1.0, length(p));
     c += (hash21(in.uv * u.res.xy + fract(u.time.x)) - 0.5) / 255.0;

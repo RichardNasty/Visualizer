@@ -19,7 +19,7 @@ final class Director {
     static let scenes: [Scene] = [
         Scene(name: "Nebula", decay: 0.965),
         Scene(name: "Tunnel", decay: 0.93),
-        Scene(name: "Liquid", decay: 0.955),
+        Scene(name: "Liquid", decay: 0.972),
         Scene(name: "Vortex", decay: 0.962),
         Scene(name: "Kaleidoscope", decay: 0.94),
         Scene(name: "Shockwave", decay: 0.925),
